@@ -1,6 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
 use iec_61850_lib::decode_basics::decode_ethernet_header;
 use iec_61850_lib::decode_goose::{decode_goose_pdu, is_goose_frame};
+use iec_61850_lib::types::{EthernetHeader, IECGoosePdu};
 use pnet::datalink::{self, interfaces, Channel};
 use serde_json::json;
 use std::env;
@@ -45,35 +46,38 @@ async fn main() {
         };
         println!("start listening goose messages");
 
+        let mut header = EthernetHeader::default();
+        let mut pdu = IECGoosePdu::default();
+
         loop {
             match datalink_rx.next() {
                 Ok(packet) => {
-                    let (rx_header, next_pos) = decode_ethernet_header(&packet);
-                    if is_goose_frame(&rx_header) {
-                        let (rx_pdu, _next_pos) = decode_goose_pdu(&packet, next_pos);
+                    let next_pos = decode_ethernet_header(&mut header, &packet);
+                    if is_goose_frame(&packet) {
+                        let _next_pos = decode_goose_pdu(&mut pdu, &packet, next_pos);
                         let message = json!({
                             "header": {
-                                "srcAddr": rx_header.src_addr,
-                                "dstAddr": rx_header.dst_addr,
-                                "tpid": rx_header.tpid,
-                                "tci": rx_header.tci,
-                                "etherType": rx_header.ether_type,
-                                "appID": rx_header.appid,
-                                "length": rx_header.length
+                                "srcAddr": header.src_addr,
+                                "dstAddr": header.dst_addr,
+                                "tpid": header.tpid,
+                                "tci": header.tci,
+                                "etherType": header.ether_type,
+                                "appID": header.appid,
+                                "length": header.length
                             },
                             "pdu": {
-                                "goCbRef": rx_pdu.go_cb_ref,
-                                "timeAllowedToLive": rx_pdu.time_allowed_to_live,
-                                "goID": rx_pdu.go_id,
-                                "t": rx_pdu.t,
-                                "datSet": rx_pdu.data_set,
-                                "stNum": rx_pdu.st_num,
-                                "sqNum": rx_pdu.sq_num,
-                                "simulation": rx_pdu.simulation,
-                                "confRev": rx_pdu.conf_rev,
-                                "ndsCom": rx_pdu.nds_com,
-                                "numDatSetEntries": rx_pdu.num_data_set_entries,
-                                "allData": rx_pdu.all_data,
+                                "goCbRef": pdu.go_cb_ref,
+                                "timeAllowedToLive": pdu.time_allowed_to_live,
+                                "goID": pdu.go_id,
+                                "t": pdu.t,
+                                "datSet": pdu.data_set,
+                                "stNum": pdu.st_num,
+                                "sqNum": pdu.sq_num,
+                                "simulation": pdu.simulation,
+                                "confRev": pdu.conf_rev,
+                                "ndsCom": pdu.nds_com,
+                                "numDatSetEntries": pdu.num_data_set_entries,
+                                "allData": pdu.all_data,
                             }
                         })
                         .to_string();
