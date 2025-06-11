@@ -45,14 +45,14 @@ pub struct EthernetHeader {
     pub length: [u8; 2],
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct IECGoosePdu {
     /** Reference to GOOSE control block in the data model of the sending IED */
     pub go_cb_ref: String,
     /** Time allowed to live until the next GOOSE packet */
     pub time_allowed_to_live: u32,
     /** Reference to the data set the GOOSE is shipping */
-    pub data_set: String,
+    pub dat_set: String,
     /** GOOSE ID as defined in GSEControl.appID */
     pub go_id: String,
     /** Time stamp of the GOOSE creation */

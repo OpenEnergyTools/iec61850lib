@@ -30,7 +30,7 @@ pub fn decode_goose_pdu(pdu: &mut IECGoosePdu, buffer: &[u8], pos: usize) -> usi
 
     // data_set
     new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
-    new_pos = decode_string(&mut pdu.data_set, buffer, new_pos, length);
+    new_pos = decode_string(&mut pdu.dat_set, buffer, new_pos, length);
 
     // go_id
     new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
@@ -66,7 +66,7 @@ pub fn decode_goose_pdu(pdu: &mut IECGoosePdu, buffer: &[u8], pos: usize) -> usi
 
     // num_data_set_entries
     new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
-    new_pos = decode_unsigned_32(&mut pdu.num_data_set_entries, buffer, new_pos, length);
+    new_pos = decode_unsigned_32(&mut pdu.num_dat_set_entries, buffer, new_pos, length);
 
     // all_data
     new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);

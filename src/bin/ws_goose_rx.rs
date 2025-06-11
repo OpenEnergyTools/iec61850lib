@@ -70,13 +70,13 @@ async fn main() {
                                 "timeAllowedToLive": pdu.time_allowed_to_live,
                                 "goID": pdu.go_id,
                                 "t": pdu.t,
-                                "datSet": pdu.data_set,
+                                "datSet": pdu.dat_set,
                                 "stNum": pdu.st_num,
                                 "sqNum": pdu.sq_num,
                                 "simulation": pdu.simulation,
                                 "confRev": pdu.conf_rev,
                                 "ndsCom": pdu.nds_com,
-                                "numDatSetEntries": pdu.num_data_set_entries,
+                                "numDatSetEntries": pdu.num_dat_set_entries,
                                 "allData": pdu.all_data,
                             }
                         })
