@@ -1,3 +1,5 @@
+use core::str;
+
 use serde::{Deserialize, Serialize};
 
 /** Data types allowed with a GOOSE */
@@ -27,16 +29,16 @@ pub enum IECData {
     UtcTime([u8; 8]),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct EthernetHeader {
     /** Destination MAC-Address */
     pub src_addr: [u8; 6],
     /** Source MAC-Address */
     pub dst_addr: [u8; 6],
     /** Tag Protocol Identifier (0x8100) */
-    pub tpid: [u8; 2],
+    pub tpid: Option<[u8; 2]>,
     /** Tag Control Information - VLAN-ID and VLAN-Priority */
-    pub tci: [u8; 2],
+    pub tci: Option<[u8; 2]>,
     /** Ethertype for the GOOSE (88-B8 or 88-B9) */
     pub ether_type: [u8; 2],
     /** APPID */
@@ -68,7 +70,72 @@ pub struct IECGoosePdu {
     /** Whether the GOOSE needs commissioning */
     pub nds_com: bool,
     /** Number of data set entries in the GOOSE */
-    pub num_data_set_entries: u32,
+    pub num_dat_set_entries: u32,
     /** All data send with the GOOSE */
     pub all_data: Vec<IECData>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct GooseConfig {
+    /** Destination MAC-Address */
+    pub src_addr: [u8; 6],
+    /** Source MAC-Address */
+    pub dst_addr: [u8; 6],
+    /** Tag Protocol Identifier (0x8100) */
+    pub tpid: Option<[u8; 2]>,
+    /** Tag Control Information - VLAN-ID and VLAN-Priority */
+    pub tci: Option<[u8; 2]>,
+    /** APPID */
+    pub appid: [u8; 2],
+    /** Reference to GOOSE control block in the data model of the sending IED */
+    pub go_cb_ref: String,
+    /** Reference to the data set the GOOSE is shipping */
+    pub dat_set: String,
+    /** GOOSE ID as defined in GSEControl.appID */
+    pub go_id: String,
+    /** Whether the GOOSE is a simulated */
+    pub simulation: bool,
+    /** Configuration revision of the GOOSE control block */
+    pub conf_rev: u32,
+    /** Whether the GOOSE needs commissioning */
+    pub nds_com: bool,
+    /** Number of data set entries in the GOOSE */
+    pub num_dat_set_entries: u32,
+    /** All data send with the GOOSE */
+    pub all_data: Vec<IECData>,
+    /** The maximum repetition interval of the GOOSE */
+    pub max_repetition: u32,
+    /** The minimum repetition interval of the GOOSE */
+    pub min_repetition: u32,
+}
+pub struct GooseSize {
+    pub length: usize,
+    pub pdu: usize,
+    pub data_set: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct GooseRuntime {
+    pub st_num: u32,
+    pub sq_num: u32,
+    pub timestamp: [u8; 8],
+}
+
+#[derive(Debug)]
+pub struct EncodeError {
+    pub message: [char; 128],
+    pub buffer_index: usize,
+}
+
+impl EncodeError {
+    pub fn new(msg: &str, buffer_index: usize) -> Self {
+        let mut message = ['\0'; 128];
+        for (i, c) in msg.chars().take(128).enumerate() {
+            message[i] = c;
+        }
+        EncodeError {
+            message,
+            buffer_index,
+        }
+    }
 }
