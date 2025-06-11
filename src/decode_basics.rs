@@ -694,13 +694,19 @@ pub fn decode_ethernet_header(header: &mut EthernetHeader, buffer: &[u8]) -> usi
         .copy_from_slice(&buffer[new_pos..new_pos + 6]);
     new_pos += 6;
 
-    header.tpid.copy_from_slice(&buffer[new_pos..new_pos + 2]);
-
     // VLAN tag present
-    if header.tpid == [0x81, 0x00] {
+    if &buffer[new_pos..new_pos + 2] == [0x81, 0x00] {
+        let mut tpid = [0u8; 2];
+        tpid.copy_from_slice(&buffer[new_pos..new_pos + 2]);
+        header.tpid = Some(tpid);
         new_pos += 2;
-        header.tci.copy_from_slice(&buffer[new_pos..new_pos + 2]);
+        let mut tci = [0u8; 2];
+        tci.copy_from_slice(&buffer[new_pos..new_pos + 2]);
+        header.tci = Some(tci);
         new_pos += 2;
+    } else {
+        header.tpid = None;
+        header.tci = None;
     }
 
     header
