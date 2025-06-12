@@ -212,12 +212,6 @@ pub fn encode_octet_string(
     buffer: &mut [u8],
     buffer_index: usize,
 ) -> Result<usize, EncodeError> {
-    if value.len() > u8::MAX as usize {
-        return Err(EncodeError::new(
-            "Octet string length exceeds the maximum value of u8 (255).",
-            buffer_index,
-        ));
-    }
     encode_ber(tag, value, buffer, buffer_index)
 }
 
@@ -261,13 +255,6 @@ pub fn encode_unsigned_integer(
     buffer: &mut [u8],
     buffer_index: usize,
 ) -> Result<usize, EncodeError> {
-    if value.len() > 8 {
-        return Err(EncodeError::new(
-            "Unsigned integer slice too large (max 8 bytes).",
-            buffer_index,
-        ));
-    }
-
     let minimal = minimal_twos_complement_bytes(value);
     // If MSB is set, prepend a zero byte
     if !minimal.is_empty() && (minimal[0] & 0x80) != 0 {
