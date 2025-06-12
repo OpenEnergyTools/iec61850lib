@@ -93,7 +93,7 @@ pub fn encode_goose(
     new_pos += 6;
 
     // Source MAC address (6 bytes)
-    buffer[new_pos..new_pos + 6].copy_from_slice(&config.src_addr);
+    buffer[new_pos..new_pos + 6].copy_from_slice(&runtime.src_addr);
     new_pos += 6;
 
     // VLAN tag (TPID and TCI) is optional

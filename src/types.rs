@@ -77,8 +77,6 @@ pub struct IECGoosePdu {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct GooseConfig {
-    /** Destination MAC-Address */
-    pub src_addr: [u8; 6],
     /** Source MAC-Address */
     pub dst_addr: [u8; 6],
     /** Tag Protocol Identifier (0x8100) */
@@ -119,6 +117,7 @@ pub struct GooseRuntime {
     pub st_num: u32,
     pub sq_num: u32,
     pub timestamp: [u8; 8],
+    pub src_addr: [u8; 6],
 }
 
 #[derive(Debug)]
