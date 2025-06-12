@@ -75,7 +75,10 @@ pub fn goose_size(config: &GooseConfig, runtime: &GooseRuntime) -> (u16, usize, 
     let dat_set_size = size_iec_data(&config.all_data);
     let pdu_size = size_goose_pdu(config, runtime, dat_set_size);
 
-    let length: u16 = (pdu_size + 8 + 3) as u16; // APPID + length + reserved fields length of PDU
+    let pdu_length_tag = 1 + size_length(pdu_size); // tag 0x61 + 0x81|0x82|0x83 + byte to encode length
+    let rest = 8;
+
+    let length: u16 = (pdu_size + rest + pdu_length_tag) as u16; // APPID + length + reserved + fields length of PDU
     (length, pdu_size, dat_set_size)
 }
 

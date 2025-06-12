@@ -81,7 +81,7 @@ pub fn encode_tag_length(
         new_pos += 1;
         buffer[new_pos] = value as u8;
         new_pos += 1;
-    } else if value < 65536 {
+    } else if value < 65535 {
         buffer[new_pos] = 0x82;
         new_pos += 1;
         buffer[new_pos] = (value >> 8) as u8;
