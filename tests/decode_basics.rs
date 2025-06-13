@@ -5,10 +5,14 @@ use iec_61850_lib::types::*;
 fn test_decode_boolean() {
     let buf = [0x81, 0x01, 0xFF];
     let mut value = false;
-    let result = decode_boolean(&mut value, &buf, 0);
+    let result = decode_boolean(&mut value, &buf, 0).unwrap();
     assert_eq!(result, 1);
 
     assert!(value, "Expected value to be true after decoding boolean");
+
+    // Error branch: buffer_index out of bounds
+    let err = decode_boolean(&mut value, &buf, 10);
+    assert!(err.is_err());
 }
 
 #[test]
@@ -16,7 +20,7 @@ fn test_decode_integer() {
     // 0x84 as i8 is -124
     let buf = [0x84, 0x01, 0x84];
     let mut value: i8 = 0;
-    let result = decode_integer_8(&mut value, &buf, 2, 1);
+    let result = decode_integer_8(&mut value, &buf, 2, 1).unwrap();
     assert_eq!(result, 3);
 
     assert_eq!(
@@ -24,11 +28,27 @@ fn test_decode_integer() {
         "Expected value to be -124 after decoding integer"
     );
 
+    // Error branch: decompress_integer out of bounds
+    let err = decode_integer_8(&mut value, &buf, 10, 1);
+    assert!(err.is_err());
+
+    // Error branch: decompress_integer length > value.len()
+    let err = decompress_integer(&mut [0u8; 1], &buf, 2, 2);
+    assert!(err.is_err());
+
+    // Pass length that does not match value.len()
+    let buf = [0x01, 0x02, 0x03, 0x04];
+    let mut value = [0u8; 2];
+    let err = decompress_integer(&mut value, &buf, 0, 3);
+    assert!(err.is_err());
+    let msg: String = err.unwrap_err().message.iter().collect();
+    assert!(msg.contains("Mismatch value length"));
+
     // Decoding a 1-byte negative integer (0x84, which is -124 as i8) into a 2-byte i16.
     // This tests sign extension: the high byte should be filled with 0xFF, resulting in 0xFF84 (-124 as i16).
     let buf = [0x84, 0x01, 0x84];
     let mut value: i16 = 0;
-    let result = decode_integer_16(&mut value, &buf, 2, 1);
+    let result = decode_integer_16(&mut value, &buf, 2, 1).unwrap();
     assert_eq!(result, 3);
 
     assert_eq!(
@@ -39,7 +59,7 @@ fn test_decode_integer() {
     // 0x7FFF as i16 is 32767
     let buf = [0x84, 0x02, 0x7F, 0xFF];
     let mut value: i16 = 0;
-    let result = decode_integer_16(&mut value, &buf, 2, 2);
+    let result = decode_integer_16(&mut value, &buf, 2, 2).unwrap();
     assert_eq!(result, 4);
 
     assert_eq!(
@@ -50,7 +70,7 @@ fn test_decode_integer() {
     // 0x000001 as i32 is 1
     let buf = [0x84, 0x03, 0x00, 0x00, 0x00, 0x01];
     let mut value: i32 = 0;
-    let result = decode_integer_32(&mut value, &buf, 2, 4);
+    let result = decode_integer_32(&mut value, &buf, 2, 4).unwrap();
     assert_eq!(result, 6);
 
     assert_eq!(value, 1, "Expected value to be 1 after decoding integer");
@@ -58,7 +78,7 @@ fn test_decode_integer() {
     // 0x8000000000000000 as i64 is 1
     let buf = [0x84, 0x03, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
     let mut value: i64 = 0;
-    let result = decode_integer_64(&mut value, &buf, 2, 8);
+    let result = decode_integer_64(&mut value, &buf, 2, 8).unwrap();
     assert_eq!(result, 10);
 
     assert_eq!(
@@ -71,7 +91,7 @@ fn test_decode_integer() {
 fn test_decode_unsigned_integer() {
     let buf = [0x85, 0x01, 0x7F];
     let mut value: u8 = 0;
-    let result = decode_unsigned_8(&mut value, &buf, 2, 1);
+    let result = decode_unsigned_8(&mut value, &buf, 2, 1).unwrap();
     assert_eq!(result, 3);
 
     assert_eq!(
@@ -79,10 +99,14 @@ fn test_decode_unsigned_integer() {
         "Expected value to be 127 after decoding integer"
     );
 
+    // Error branch: decompress_integer out of bounds
+    let err = decode_unsigned_8(&mut value, &buf, 10, 1);
+    assert!(err.is_err());
+
     // 0xFFFF as u16 is 65535
     let buf = [0x85, 0x02, 0xFF, 0xFF];
     let mut value: u16 = 0;
-    let result = decode_unsigned_16(&mut value, &buf, 2, 2);
+    let result = decode_unsigned_16(&mut value, &buf, 2, 2).unwrap();
     assert_eq!(result, 4);
 
     assert_eq!(
@@ -93,7 +117,7 @@ fn test_decode_unsigned_integer() {
     // 0xFFFFFFFF as u32 is 4294967295
     let buf = [0x85, 0x04, 0xFF, 0xFF, 0xFF, 0xFF];
     let mut value: u32 = 0;
-    let result = decode_unsigned_32(&mut value, &buf, 2, 4);
+    let result = decode_unsigned_32(&mut value, &buf, 2, 4).unwrap();
     assert_eq!(result, 6);
 
     assert_eq!(
@@ -116,7 +140,7 @@ fn test_decode_float() {
         test_bytes[2],
         test_bytes[3],
     ];
-    let result = decode_float_32(&mut value, &buf, 2, 5);
+    let result = decode_float_32(&mut value, &buf, 2, 5).unwrap();
     assert_eq!(result, 7);
     assert_eq!(
         value, test_value,
@@ -137,7 +161,7 @@ fn test_decode_float() {
         max_bytes[3],
     ];
     let mut decoded_max: f32 = 0.0;
-    let result = decode_float_32(&mut decoded_max, &buf_max, 2, 5);
+    let result = decode_float_32(&mut decoded_max, &buf_max, 2, 5).unwrap();
     assert_eq!(result, 7);
     assert_eq!(
         decoded_max, max_f32,
@@ -158,13 +182,22 @@ fn test_decode_float() {
         min_bytes[3],
     ];
     let mut decoded_min: f32 = 0.0;
-    let result = decode_float_32(&mut decoded_min, &buf_min, 2, 5);
+    let result = decode_float_32(&mut decoded_min, &buf_min, 2, 5).unwrap();
     assert_eq!(result, 7);
     assert_eq!(
         decoded_min, min_f32,
         "Expected value to be {} after decoding min float",
         min_f32
     );
+
+    let mut value: f32 = 0.0;
+    // Buffer is too short to read 5 bytes for f32 (needs at least buffer_index+5 bytes)
+    let buf = [0x09, 0x05, 0x08, 0x01];
+    // Try to decode starting at index 2, length 5 (will go out of bounds)
+    let err = decode_float_32(&mut value, &buf, 2, 5);
+    assert!(err.is_err());
+    let msg: String = err.unwrap_err().message.iter().collect();
+    assert!(msg.contains("exceeds buffer length"));
 }
 
 #[test]
@@ -172,12 +205,16 @@ fn test_decode_string() {
     let mut value = String::new();
     // "AΩßÄ" in UTF-8: 0x41 0xCE 0xA9 0xC3 0x9F 0xC3 0x84
     let buf = [0x82, 0x07, 0x41, 0xCE, 0xA9, 0xC3, 0x9F, 0xC3, 0x84];
-    let result = decode_string(&mut value, &buf, 2, 7);
+    let result = decode_string(&mut value, &buf, 2, 7).unwrap();
     assert_eq!(result, 9);
     assert_eq!(
         value, "AΩßÄ",
         "Expected value to be 'AΩßÄ' after decoding string"
     );
+
+    // Error branch: buffer too short for string
+    let err = decode_string(&mut value, &buf, 5, 10);
+    assert!(err.is_err());
 }
 
 #[test]
@@ -186,9 +223,13 @@ fn test_decode_octet_string() {
     let buf = [0x89, 0x06, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF];
     let mut value = [0u8; 6];
     // buffer_index = 2 (skip tag and length), length = 6
-    let result = decode_octet_string(&mut value, &buf, 2, 6);
+    let result = decode_octet_string(&mut value, &buf, 2, 6).unwrap();
     assert_eq!(result, 8);
     assert_eq!(value, [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF]);
+
+    // Error branch: buffer too short for octet string
+    let err = decode_octet_string(&mut value, &buf, 5, 6);
+    assert!(err.is_err());
 }
 
 #[test]
@@ -202,7 +243,7 @@ fn test_decode_bit_string() {
     let mut val = Vec::new();
     let mut padding = 0u8;
     // buffer_index = 2 (where padding starts), length = 3 (padding + 2 value bytes)
-    let result = decode_bit_string(&mut val, &mut padding, &buf, 2, 3);
+    let result = decode_bit_string(&mut val, &mut padding, &buf, 2, 3).unwrap();
 
     // The function reverses the order and bits of each byte
     // 0b10101010.reverse_bits() = 0b01010101 = 0x55
@@ -211,15 +252,19 @@ fn test_decode_bit_string() {
     assert_eq!(result, 5);
     assert_eq!(padding, 2);
     assert_eq!(val, vec![0x11, 0x55]);
+
+    // Error branch: buffer too short for bit string
+    let err = decode_bit_string(&mut val, &mut padding, &buf, 4, 3);
+    assert!(err.is_err());
 }
 
 #[test]
-fn test_decode_tag_length_non_panic_branches() {
+fn test_decode_tag_length() {
     // Short form: tag = 0xA1, length = 5
     let buf_short = [0xA1, 0x05];
     let mut tag: u8 = 0;
     let mut length: usize = 0;
-    let pos = decode_tag_length(&mut tag, &mut length, &buf_short, 0);
+    let pos = decode_tag_length(&mut tag, &mut length, &buf_short, 0).unwrap();
     assert_eq!(tag, 0xA1);
     assert_eq!(length, 5);
     assert_eq!(pos, 2);
@@ -228,7 +273,7 @@ fn test_decode_tag_length_non_panic_branches() {
     let buf_long = [0xA2, 0x82, 0x01, 0x23];
     let mut tag: u8 = 0;
     let mut length: usize = 0;
-    let pos = decode_tag_length(&mut tag, &mut length, &buf_long, 0);
+    let pos = decode_tag_length(&mut tag, &mut length, &buf_long, 0).unwrap();
     assert_eq!(tag, 0xA2);
     assert_eq!(length, 0x0123);
     assert_eq!(pos, 4);
@@ -237,10 +282,79 @@ fn test_decode_tag_length_non_panic_branches() {
     let buf_long3 = [0xA3, 0x83, 0x00, 0x01, 0x02];
     let mut tag: u8 = 0;
     let mut length: usize = 0;
-    let pos = decode_tag_length(&mut tag, &mut length, &buf_long3, 0);
+    let pos = decode_tag_length(&mut tag, &mut length, &buf_long3, 0).unwrap();
     assert_eq!(tag, 0xA3);
     assert_eq!(length, 0x000102);
     assert_eq!(pos, 5);
+
+    // Error branch: missing length byte
+    let buf_missing = [0xA1];
+    let mut tag: u8 = 0;
+    let mut length: usize = 0;
+    let err = decode_tag_length(&mut tag, &mut length, &buf_missing, 0);
+    assert!(err.is_err());
+
+    // Error branch: invalid number of length bytes (0)
+    let buf_invalid = [0xA1, 0x80];
+    let mut tag: u8 = 0;
+    let mut length: usize = 0;
+    let err = decode_tag_length(&mut tag, &mut length, &buf_invalid, 0);
+    assert!(err.is_err());
+
+    // Error branch: not enough bytes for multi-byte length
+    let buf_short_len = [0xA1, 0x82, 0x01];
+    let mut tag: u8 = 0;
+    let mut length: usize = 0;
+    let err = decode_tag_length(&mut tag, &mut length, &buf_short_len, 0);
+    assert!(err.is_err());
+
+    let mut tag: u8 = 0;
+    let mut length: usize = 0;
+    // Empty buffer triggers out of bounds
+    let buf: [u8; 0] = [];
+    let err = decode_tag_length(&mut tag, &mut length, &buf, 0);
+    assert!(err.is_err());
+    let msg: String = err.unwrap_err().message.iter().collect();
+    assert!(msg.contains("Out of bounds for buffer length"));
+}
+
+#[test]
+fn test_decode_iec_data_element_errors() {
+    // Oversize signed integer
+    let buf = [0x85, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let err = decode_iec_data_element(&buf, 0);
+    assert!(err.is_err());
+    let err = decode_iec_data_element(&buf, 0).unwrap_err();
+    let msg: String = err.message.iter().collect();
+    assert!(msg.contains("oversize signed integer"));
+
+    // Oversize unsigned integer
+    let buf = [0x86, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let err = decode_iec_data_element(&buf, 0);
+    assert!(err.is_err());
+    let msg: String = err.unwrap_err().message.iter().collect();
+    assert!(msg.contains("Unsigned integer exceeds supported size"));
+
+    // 5-byte unsigned integer, but first byte is not 0x00
+    let buf = [0x86, 0x05, 0x01, 0, 0, 0, 0];
+    let err = decode_iec_data_element(&buf, 0);
+    assert!(err.is_err());
+    let msg: String = err.unwrap_err().message.iter().collect();
+    assert!(msg.contains("Unsigned integer exceeds supported size"));
+
+    // Unexpected float size
+    let buf = [0x87, 0x04, 0, 0, 0, 0];
+    let err = decode_iec_data_element(&buf, 0);
+    assert!(err.is_err());
+    let msg: String = err.unwrap_err().message.iter().collect();
+    assert!(msg.contains("Unexpected float size"));
+
+    // Tag 0xFF is not supported, should trigger the unknown data type error
+    let buf = [0xFF, 0x01, 0x00];
+    let err = decode_iec_data_element(&buf, 0);
+    assert!(err.is_err());
+    let msg: String = err.unwrap_err().message.iter().collect();
+    assert!(msg.contains("Unknown data type"));
 }
 
 #[test]
@@ -376,7 +490,7 @@ fn test_decode_iec_data_multiple_elements() {
     ];
 
     let mut data: Vec<IECData> = Vec::new();
-    let pos = decode_iec_data(&mut data, &buf, 0, buf.len());
+    let pos = decode_iec_data(&mut data, &buf, 0, buf.len()).unwrap();
 
     assert_eq!(pos, buf.len());
     assert_eq!(data[0], IECData::Boolean(true));
@@ -390,8 +504,6 @@ fn test_decode_iec_data_multiple_elements() {
     assert_eq!(data[8], IECData::Int32u(uint32_val)); // 5-byte UInt32
     if let IECData::Float32(v) = data[9] {
         assert!((v - 42.5).abs() < 1e-6);
-    } else {
-        panic!("Expected Float32");
     }
     assert_eq!(data[10], IECData::VisibleString("Aß".to_string()));
     assert_eq!(data[11], IECData::OctetString(vec![0xDE, 0xAD]));

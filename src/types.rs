@@ -138,3 +138,22 @@ impl EncodeError {
         }
     }
 }
+
+#[derive(Debug)]
+pub struct DecodeError {
+    pub message: [char; 128],
+    pub buffer_index: usize,
+}
+
+impl DecodeError {
+    pub fn new(msg: &str, buffer_index: usize) -> Self {
+        let mut message = ['\0'; 128];
+        for (i, c) in msg.chars().take(128).enumerate() {
+            message[i] = c;
+        }
+        DecodeError {
+            message,
+            buffer_index,
+        }
+    }
+}

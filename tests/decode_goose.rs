@@ -19,7 +19,7 @@ fn test_decode_goose_pdu_all_fields() {
     let mut goose_pdu = IECGoosePdu::default();
     let mut header = EthernetHeader::default();
     let pos = decode_ethernet_header(&mut header, &buf);
-    let pos = decode_goose_pdu(&mut goose_pdu, &buf, pos);
+    let pos = decode_goose_pdu(&mut goose_pdu, &buf, pos).unwrap();
 
     assert_eq!(pos, buf.len());
     assert_eq!(goose_pdu.go_cb_ref, "IED1/LLN0$GO$gcb1");

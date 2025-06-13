@@ -1,5 +1,5 @@
 use crate::decode_basics::*;
-use crate::types::IECGoosePdu;
+use crate::types::{DecodeError, IECGoosePdu};
 
 /// Decodes a GOOSE PDU from the buffer at the specified position,
 /// writing the result into the provided mutable reference.
@@ -11,69 +11,70 @@ use crate::types::IECGoosePdu;
 ///
 /// # Returns
 /// The new buffer position after decoding the PDU.
-pub fn decode_goose_pdu(pdu: &mut IECGoosePdu, buffer: &[u8], pos: usize) -> usize {
+pub fn decode_goose_pdu(
+    pdu: &mut IECGoosePdu,
+    buffer: &[u8],
+    pos: usize,
+) -> Result<usize, DecodeError> {
     let mut new_pos = pos;
 
     // goose_pdu_length
     let mut _tag = 0u8;
     let mut _length = 0usize;
-    new_pos = decode_tag_length(&mut _tag, &mut _length, buffer, new_pos);
+    new_pos = decode_tag_length(&mut _tag, &mut _length, buffer, new_pos)?;
 
     // go_cb_ref
     let mut length = 0usize;
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
-    new_pos = decode_string(&mut pdu.go_cb_ref, buffer, new_pos, length);
+    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
+    new_pos = decode_string(&mut pdu.go_cb_ref, buffer, new_pos, length)?;
 
     // time_allowed_to_live
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
-    new_pos = decode_unsigned_32(&mut pdu.time_allowed_to_live, buffer, new_pos, length);
+    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
+    new_pos = decode_unsigned_32(&mut pdu.time_allowed_to_live, buffer, new_pos, length)?;
 
     // data_set
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
-    new_pos = decode_string(&mut pdu.dat_set, buffer, new_pos, length);
+    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
+    new_pos = decode_string(&mut pdu.dat_set, buffer, new_pos, length)?;
 
     // go_id
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
-    new_pos = decode_string(&mut pdu.go_id, buffer, new_pos, length);
+    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
+    new_pos = decode_string(&mut pdu.go_id, buffer, new_pos, length)?;
 
     // t (timestamp)
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
-    if length != 8 {
-        panic!("Timestamp must be 8 bytes, got {}", length);
-    }
+    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
     pdu.t.copy_from_slice(&buffer[new_pos..new_pos + 8]);
     new_pos += 8;
 
     // st_num
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
-    new_pos = decode_unsigned_32(&mut pdu.st_num, buffer, new_pos, length);
+    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
+    new_pos = decode_unsigned_32(&mut pdu.st_num, buffer, new_pos, length)?;
 
     // sq_num
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
-    new_pos = decode_unsigned_32(&mut pdu.sq_num, buffer, new_pos, length);
+    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
+    new_pos = decode_unsigned_32(&mut pdu.sq_num, buffer, new_pos, length)?;
 
     // simulation
-    new_pos = decode_tag_length(&mut _tag, &mut _length, buffer, new_pos);
-    new_pos = decode_boolean(&mut pdu.simulation, buffer, new_pos);
+    new_pos = decode_tag_length(&mut _tag, &mut _length, buffer, new_pos)?;
+    new_pos = decode_boolean(&mut pdu.simulation, buffer, new_pos)?;
 
     // conf_rev
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
-    new_pos = decode_unsigned_32(&mut pdu.conf_rev, buffer, new_pos, length);
+    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
+    new_pos = decode_unsigned_32(&mut pdu.conf_rev, buffer, new_pos, length)?;
 
     // nds_com
-    new_pos = decode_tag_length(&mut _tag, &mut _length, buffer, new_pos);
-    new_pos = decode_boolean(&mut pdu.nds_com, buffer, new_pos);
+    new_pos = decode_tag_length(&mut _tag, &mut _length, buffer, new_pos)?;
+    new_pos = decode_boolean(&mut pdu.nds_com, buffer, new_pos)?;
 
     // num_data_set_entries
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
-    new_pos = decode_unsigned_32(&mut pdu.num_dat_set_entries, buffer, new_pos, length);
+    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
+    new_pos = decode_unsigned_32(&mut pdu.num_dat_set_entries, buffer, new_pos, length)?;
 
     // all_data
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos);
+    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
     pdu.all_data.clear();
-    new_pos = decode_iec_data(&mut pdu.all_data, buffer, new_pos, new_pos + length);
+    new_pos = decode_iec_data(&mut pdu.all_data, buffer, new_pos, new_pos + length)?;
 
-    new_pos
+    Ok(new_pos)
 }
 
 /// Checks if the given buffer contains a GOOSE frame by inspecting the EtherType field,
