@@ -321,35 +321,6 @@ pub fn decode_float_32(val: &mut f32, buffer: &[u8], buffer_index: usize, length
     buffer_index + length
 }
 
-/// Decodes an IEC 61850-7-2 encoded 64-bit IEEE 754 float from the buffer at the specified position,
-/// writing the result into the provided mutable reference.
-///
-/// # Parameters
-/// - `val`: A mutable reference where the decoded f64 will be stored.
-/// - `buffer`: The input byte slice containing the encoded float.
-/// - `buffer_index`: The starting position in the buffer to read the float from.
-/// - `length`: The number of bytes used for the encoded float in the buffer (should be 9: 1 descriptor + 8 value bytes).
-///
-/// # Returns
-/// The next position in the buffer after reading the float.
-///
-/// # Panics
-/// Panics if the requested range (buffer_index+1..buffer_index+9) exceeds the buffer length.
-pub fn decode_float_64(val: &mut f64, buffer: &[u8], buffer_index: usize, length: usize) -> usize {
-    if buffer_index + 9 > buffer.len() {
-        panic!(
-            "Attempt to read 8 bytes for f64 from position {} exceeds buffer length {}",
-            buffer_index + 1,
-            buffer.len()
-        );
-    }
-    // Skip the descriptor byte (at buffer_index), read the next 8 bytes as IEEE 754 float
-    let mut bytes = [0u8; 8];
-    bytes.copy_from_slice(&buffer[buffer_index + 1..buffer_index + 9]);
-    *val = f64::from_be_bytes(bytes);
-    buffer_index + length
-}
-
 /// Decodes an IEC 61850-8-1 coded enum (BIT STRING) from the buffer at the specified position and length,
 /// writing the result into the provided mutable references.
 ///
@@ -552,10 +523,6 @@ fn decode_iec_data_element(buffer: &[u8], buffer_index: usize) -> (usize, IECDat
                     decode_unsigned_32(&mut val, buffer, new_buffer_index + 1, length - 1);
                 (next_buffer_index, IECData::Int32u(val))
             }
-            6..=8 => panic!(
-                "unsigned integer at buffer index {} exceeds supported size",
-                new_buffer_index
-            ),
             _ => panic!(
                 "unsigned integer at buffer index {} exceeds supported size",
                 new_buffer_index
@@ -567,11 +534,6 @@ fn decode_iec_data_element(buffer: &[u8], buffer_index: usize) -> (usize, IECDat
                 let mut val: f32 = 0.0;
                 let next_buffer_index = decode_float_32(&mut val, buffer, new_buffer_index, length);
                 (next_buffer_index, IECData::Float32(val))
-            }
-            9 => {
-                let mut val: f64 = 0.0;
-                let next_buffer_index = decode_float_64(&mut val, buffer, new_buffer_index, length);
-                (next_buffer_index, IECData::Float64(val))
             }
             _ => panic!(
                 "unexpected float size {} at buffer index {}",

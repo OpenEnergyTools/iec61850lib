@@ -3,7 +3,7 @@ use core::str;
 use serde::{Deserialize, Serialize};
 
 /** Data types allowed with a GOOSE */
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub enum IECData {
     Array(Vec<IECData>),
     Structure(Vec<IECData>),
@@ -31,10 +31,10 @@ pub enum IECData {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct EthernetHeader {
-    /** Destination MAC-Address */
-    pub src_addr: [u8; 6],
     /** Source MAC-Address */
     pub dst_addr: [u8; 6],
+    /** Destination MAC-Address */
+    pub src_addr: [u8; 6],
     /** Tag Protocol Identifier (0x8100) */
     pub tpid: Option<[u8; 2]>,
     /** Tag Control Information - VLAN-ID and VLAN-Priority */
