@@ -3,7 +3,7 @@ use core::str;
 use serde::{Deserialize, Serialize};
 
 /** Data types allowed with a GOOSE */
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub enum IECData {
     Array(Vec<IECData>),
     Structure(Vec<IECData>),
@@ -73,6 +73,39 @@ pub struct IECGoosePdu {
     pub num_dat_set_entries: u32,
     /** All data send with the GOOSE */
     pub all_data: Vec<IECData>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct SavPdu {
+    /** Whether the sampled value stream is simulated */
+    pub sim: bool,
+    /** Number of ASDU in the packet*/
+    pub no_asdu: u16,
+    /** Time allowed to live until the next GOOSE packet */
+    pub security: bool,
+    /** All data send with the GOOSE */
+    pub sav_asdu: Vec<SavAsdu>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct SavAsdu {
+    /** Multicast Sampled Values ID as defined in tSampledValueControl.svId*/
+    pub msv_id: String,
+    /** Reference to the data set the GOOSE is shipping */
+    pub dat_set: Option<String>,
+    /** Increments with each sampled value taken */
+    pub smp_cnt: u16,
+    /** Configuration revision of the GOOSE control block */
+    pub conf_rev: u32,
+    /** Transmission time of the ASDU */
+    pub refr_tm: Option<[u8; 8]>,
+    /** How the sample value stream is time synchronized 0 = not, 1 = locally and 2 globally */
+    pub smp_synch: u8,
+    pub smp_rate: Option<u16>,
+    /** All data send with the GOOSE */
+    pub all_data: Vec<(f32, u32)>,
+    pub smp_mod: Option<u16>,
+    pub gm_identity: Option<[u8; 8]>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
