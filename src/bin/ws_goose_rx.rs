@@ -55,6 +55,7 @@ async fn main() {
                     let next_pos = decode_ethernet_header(&mut header, &packet);
                     if is_goose_frame(&packet) {
                         let _next_pos = decode_goose_pdu(&mut pdu, &packet, next_pos);
+                        // NOTE: You could use https://docs.rs/serde_json/latest/serde_json/fn.to_string.html or https://docs.rs/serde_json/latest/serde_json/fn.to_value.html here instead of writing out all fields
                         let message = json!({
                             "header": {
                                 "srcAddr": header.src_addr,

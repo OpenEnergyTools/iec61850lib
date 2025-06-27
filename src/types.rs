@@ -22,8 +22,11 @@ pub enum IECData {
     Float32(f32),
     Float64(f64),
 
+    // NOTE: String in Rust is always utf-8 encoded, so I don't know if all VisibleString can be represented in a Rust String, maybe this would need to be a Vec<u8> or a custom type wrapping a Vec<u8>
     VisibleString(String),
     MmsString(String),
+
+    // NOTE: Might be nice to use BitVec here: https://docs.rs/bitvec/latest/bitvec/
     BitString { padding: u8, val: Vec<u8> },
     OctetString(Vec<u8>),
     UtcTime([u8; 8]),

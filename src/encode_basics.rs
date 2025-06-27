@@ -25,14 +25,12 @@ pub fn minimal_twos_complement_bytes(value: &[u8]) -> &[u8] {
 /// - 3 bytes for values < 65536 (0x82 + 2 bytes)
 /// - 4 bytes for larger values (0x83 + 3 bytes)
 pub fn size_length(value: usize) -> usize {
-    if value < 128 {
-        return 1;
-    } else if value < 256 {
-        return 2;
-    } else if value < 65535 {
-        return 3;
-    } else {
-        return 4;
+    // NOTE: Could be written as a `match`
+    match value {
+        0..128 => 1,
+        128..256 => 2,
+        256..65535 => 3,
+        65535.. => 4,
     }
 }
 
@@ -103,6 +101,21 @@ pub fn encode_tag_length(
         new_pos += 1;
         buffer[new_pos] = (value & 0xff) as u8;
         new_pos += 1;
+    }
+
+    // NOTE: I would rewrite this something like this:
+    match size_length(value) {
+        1 => buffer[new_pos] = value as u8,
+        n => {
+            // Write length
+            let len = n - 1;
+            buffer[new_pos] = (0x80 + len) as u8;
+
+            // Write length bytes
+            let bytes = value.to_be_bytes();
+            let relevant_bytes = &bytes[bytes.len() - 1..];
+            buffer[new_pos..new_pos + len].copy_from_slice(&relevant_bytes);
+        }
     }
 
     Ok(new_pos)

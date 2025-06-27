@@ -27,6 +27,7 @@ type GooseMap = Arc<Mutex<HashMap<String, Arc<Mutex<GooseState>>>>>;
 /// The first 4 bytes are seconds since UNIX_EPOCH (big-endian),
 /// the next 3 bytes are fractional seconds (in nanoseconds, big-endian, most significant bytes),
 /// and the last byte is the quality indicator (0x18 for "time is synchronized").
+// NOTE: I really like this implementation :)
 pub fn time_ms() -> [u8; 8] {
     let mut time = [0u8; 8];
     let now = SystemTime::now();
@@ -97,7 +98,7 @@ async fn main() {
                             if let Ok(json_msg) = serde_json::from_str::<serde_json::Value>(text) {
                                 // Use go_cb_ref as the unique key for each GOOSE instance
                                 println!("Received message: {:?}", json_msg);
-                                
+
                                 match json_msg.get("cmd").and_then(|c| c.as_str()) {
                                     Some("init") => {
                                         let go_cb_ref = if let Some(config) = json_msg.get("config") {
@@ -171,7 +172,7 @@ async fn main() {
                                                     // Encode GOOSE
                                                     match encode_goose(&state.config, &state.runtime, &mut buffer) {
                                                         Ok(end_pos) => {
-                                                            println!("Written buffer {}",end_pos); 
+                                                            println!("Written buffer {}",end_pos);
                                                             let mut tx = tx_eth2.lock().await;
                                                             let _ = tx.send_to(&&buffer[..end_pos], None);
                                                         },
