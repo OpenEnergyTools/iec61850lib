@@ -1,106 +1,27 @@
-use crate::encode_basics::*;
+use rasn::ber::encode;
+
 use crate::types::*;
 
-/// Returns the number of bytes required to encode an IECGoosePdu (minimal ASN.1 BER encoding).
-///
-/// This includes all fields and the encoded all_data array.
-/// The size of all_data is determined using the size_iec_data function.
-pub fn size_goose_pdu(config: &GooseConfig, runtime: &GooseRuntime, all_data_size: usize) -> usize {
-    let mut pdu_size: usize = 0;
+pub fn encode_ethernet_header(header: &EthernetHeader, length: u16) -> Vec<u8> {
+    // init buffer
+    let buffer_len: usize = if header.tpid.is_some() && header.tci.is_some() {
+        26
+    } else {
+        22
+    };
+    let mut buffer = vec![0u8; buffer_len];
 
-    // [80] goCbRef (VisibleString)
-    pdu_size += 1 + size_length(config.go_cb_ref.len()) + config.go_cb_ref.len();
-
-    // Helper for minimal unsigned integer encoding size (stack only)
-    fn minimal_unsigned_len(value: u64) -> usize {
-        let buf = value.to_be_bytes();
-        let mut start = 0;
-        while start < buf.len() - 1 && buf[start] == 0 {
-            start += 1;
-        }
-        let minimal = &buf[start..];
-        if !minimal.is_empty() && (minimal[0] & 0x80) != 0 {
-            minimal.len() + 1 // leading zero for positive
-        } else {
-            minimal.len()
-        }
-    }
-
-    // [81] timeAllowedToLive (Unsigned, minimal BER)
-    let time_allowed_to_live = config.max_repetition * 2; // Following recommendation
-    let time_allowed_to_live_len = minimal_unsigned_len(time_allowed_to_live as u64);
-    pdu_size += 1 + size_length(time_allowed_to_live_len) + time_allowed_to_live_len;
-
-    // [82] datSet (VisibleString)
-    pdu_size += 1 + size_length(config.dat_set.len()) + config.dat_set.len();
-
-    // [83] goID (VisibleString)
-    pdu_size += 1 + size_length(config.go_id.len()) + config.go_id.len();
-
-    // [84] t (UtcTime, 8 bytes)
-    pdu_size += 1 + size_length(8) + 8;
-
-    // [85] stNum (Unsigned, minimal BER)
-    let st_num_len = minimal_unsigned_len(runtime.st_num as u64);
-    pdu_size += 1 + size_length(st_num_len) + st_num_len;
-
-    // [86] sqNum (Unsigned, minimal BER)
-    let sq_num_len = minimal_unsigned_len(runtime.sq_num as u64);
-    pdu_size += 1 + size_length(sq_num_len) + sq_num_len;
-
-    // [87] simulation (Boolean)
-    pdu_size += 3; // tag + length + value
-
-    // [88] confRev (Unsigned, minimal BER)
-    let conf_rev_len = minimal_unsigned_len(config.conf_rev as u64);
-    pdu_size += 1 + size_length(conf_rev_len) + conf_rev_len;
-
-    // [89] ndsCom (Boolean)
-    pdu_size += 3; // tag + length + value
-
-    // [8a] numDataSetEntries (Unsigned, minimal BER)
-    let num_entries = config.all_data.len() as u64;
-    let num_entries_len = minimal_unsigned_len(num_entries);
-    pdu_size += 1 + size_length(num_entries_len) + num_entries_len;
-
-    // [ab] allData tag and length
-    pdu_size += 1 + size_length(all_data_size);
-    pdu_size += all_data_size;
-
-    pdu_size
-}
-
-/// Returns the number of bytes required to encode a complete GooseFrame (Ethernet header + GOOSE PDU).
-pub fn goose_size(config: &GooseConfig, runtime: &GooseRuntime) -> (u16, usize, usize) {
-    let dat_set_size = size_iec_data(&config.all_data);
-    let pdu_size = size_goose_pdu(config, runtime, dat_set_size);
-
-    let pdu_length_tag = 1 + size_length(pdu_size); // tag 0x61 + 0x81|0x82|0x83 + byte to encode length
-    let rest = 8;
-
-    let length: u16 = (pdu_size + rest + pdu_length_tag) as u16; // APPID + length + reserved + fields length of PDU
-    (length, pdu_size, dat_set_size)
-}
-
-pub fn encode_goose(
-    config: &GooseConfig,
-    runtime: &GooseRuntime,
-    buffer: &mut [u8],
-) -> Result<usize, EncodeError> {
-    let mut new_pos = 0;
-
-    let (length, pdu_length, data_set_size) = goose_size(&config, runtime);
-
+    let mut new_pos: usize = 0;
     // Destination MAC address (6 bytes)
-    buffer[new_pos..new_pos + 6].copy_from_slice(&config.dst_addr);
+    buffer[new_pos..new_pos + 6].copy_from_slice(&header.dst_addr);
     new_pos += 6;
 
     // Source MAC address (6 bytes)
-    buffer[new_pos..new_pos + 6].copy_from_slice(&runtime.src_addr);
+    buffer[new_pos..new_pos + 6].copy_from_slice(&header.src_addr);
     new_pos += 6;
 
     // VLAN tag (TPID and TCI) is optional
-    if let (Some(tpid), Some(tci)) = (&config.tpid, &config.tci) {
+    if let (Some(tpid), Some(tci)) = (&header.tpid, &header.tci) {
         // Write TPID (2 bytes)
         buffer[new_pos..new_pos + 2].copy_from_slice(tpid);
         new_pos += 2;
@@ -110,15 +31,15 @@ pub fn encode_goose(
     }
 
     // EtherType is fixed to 0x88B8 for GOOSE
-    buffer[new_pos..new_pos + 2].copy_from_slice(&[0x88, 0xB8]);
+    buffer[new_pos..new_pos + 2].copy_from_slice(&header.ether_type);
     new_pos += 2;
 
     // APPID (2 bytes)
-    buffer[new_pos..new_pos + 2].copy_from_slice(&config.appid);
+    buffer[new_pos..new_pos + 2].copy_from_slice(&header.appid);
     new_pos += 2;
 
     // Length (2 bytes)
-    buffer[new_pos..new_pos + 2].copy_from_slice(&(length as u16).to_be_bytes());
+    buffer[new_pos..new_pos + 2].copy_from_slice(&length.to_be_bytes());
     new_pos += 2;
 
     // Reserved 1 (2 bytes, set to 0)
@@ -127,55 +48,223 @@ pub fn encode_goose(
 
     // Reserved 2 (2 bytes, set to 0)
     buffer[new_pos..new_pos + 2].copy_from_slice(&[0; 2]);
-    new_pos += 2;
 
-    // [61] GOOSE PDU tag and length
-    new_pos = encode_tag_length(0x61, pdu_length, buffer, new_pos)?;
+    buffer
+}
 
-    // [80] goCbRef (VisibleString)
-    new_pos = encode_string(0x80, &config.go_cb_ref, buffer, new_pos)?;
+pub fn encode_goose(header: &EthernetHeader, pdu: &IECGoosePdu) -> Result<Vec<u8>, EncodeError> {
+    // Encode the GOOSE PDU using rasn
+    let pdu_bytes = encode(&IECGoosePduRasn::from(pdu))
+        .map_err(|e| EncodeError::new(&format!("Failed to encode GOOSE PDU: {:?}", e), 0))?;
 
-    // [81] timeAllowedToLive (Unsigned)
-    let time_allowed_to_live = config.max_repetition * 2; // Following recommendation
-    new_pos = encode_unsigned_integer(0x81, &time_allowed_to_live.to_be_bytes(), buffer, new_pos)?;
+    // calculate length based in pdu_bytes
+    let length = pdu_bytes.len() as u16 + 8; // 8 bytes for APPID, length, reserved1, reserved2 and 4 bytes for Ethernet header fields
+    let ether_buffer = encode_ethernet_header(header, length);
 
-    // [82] datSet (VisibleString)
-    new_pos = encode_string(0x82, &config.dat_set, buffer, new_pos)?;
+    // Combine Ethernet header and GOOSE PDU into a single buffer
+    Ok([ether_buffer, pdu_bytes].concat())
+}
 
-    // [83] goID (VisibleString)
-    new_pos = encode_string(0x83, &config.go_id, buffer, new_pos)?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // [84] t (UtcTime, 8 bytes)
-    new_pos = encode_octet_string(0x84, &runtime.timestamp, buffer, new_pos)?;
+    #[test]
+    fn test_encode_ethernet_header_without_vlan() {
+        let header = EthernetHeader {
+            dst_addr: [0x01, 0x0C, 0xCD, 0x01, 0x00, 0x01],
+            src_addr: [0x00, 0x1A, 0xB6, 0x03, 0x2F, 0x1C],
+            tpid: None,
+            tci: None,
+            ether_type: [0x88, 0xB8],
+            appid: [0x10, 0x01],
+            length: [0x00, 0x00], // Not used in encoding, passed as parameter
+        };
 
-    // [85] stNum (Unsigned)
-    new_pos = encode_unsigned_integer(0x85, &runtime.st_num.to_be_bytes(), buffer, new_pos)?;
+        let length: u16 = 140;
+        let encoded = encode_ethernet_header(&header, length);
 
-    // [86] sqNum (Unsigned)
-    new_pos = encode_unsigned_integer(0x86, &runtime.sq_num.to_be_bytes(), buffer, new_pos)?;
+        let expected: &[u8] = &[
+            // Destination MAC
+            0x01, 0x0C, 0xCD, 0x01, 0x00, 0x01, // Source MAC
+            0x00, 0x1A, 0xB6, 0x03, 0x2F, 0x1C, // EtherType
+            0x88, 0xB8, // APPID
+            0x10, 0x01, // Length
+            0x00, 0x8C, // 140 in hex
+            // Reserved1
+            0x00, 0x00, // Reserved2
+            0x00, 0x00,
+        ];
 
-    // [87] simulation (Boolean)
-    new_pos = encode_boolean(0x87, config.simulation, buffer, new_pos)?;
+        assert_eq!(
+            encoded.len(),
+            22,
+            "Ethernet header without VLAN should be 22 bytes"
+        );
+        assert_eq!(
+            encoded, expected,
+            "Encoded Ethernet header does not match expected"
+        );
+    }
 
-    // [88] confRev (Unsigned)
-    new_pos = encode_unsigned_integer(0x88, &config.conf_rev.to_be_bytes(), buffer, new_pos)?;
+    #[test]
+    fn test_encode_ethernet_header_with_vlan() {
+        let header = EthernetHeader {
+            dst_addr: [0x01, 0x0C, 0xCD, 0x01, 0x00, 0x01],
+            src_addr: [0x00, 0x1A, 0xB6, 0x03, 0x2F, 0x1C],
+            tpid: Some([0x81, 0x00]),
+            tci: Some([0x00, 0x01]),
+            ether_type: [0x88, 0xB8],
+            appid: [0x10, 0x01],
+            length: [0x00, 0x00], // Not used in encoding
+        };
 
-    // [89] ndsCom (Boolean)
-    new_pos = encode_boolean(0x89, config.nds_com, buffer, new_pos)?;
+        let length: u16 = 140;
+        let encoded = encode_ethernet_header(&header, length);
 
-    // [8a] numDataSetEntries (Unsigned)
-    new_pos = encode_unsigned_integer(
-        0x8a,
-        &(config.all_data.len() as u16).to_be_bytes(),
-        buffer,
-        new_pos,
-    )?;
+        let expected: &[u8] = &[
+            // Destination MAC
+            0x01, 0x0C, 0xCD, 0x01, 0x00, 0x01, // Source MAC
+            0x00, 0x1A, 0xB6, 0x03, 0x2F, 0x1C, // VLAN TPID
+            0x81, 0x00, // VLAN TCI
+            0x00, 0x01, // EtherType
+            0x88, 0xB8, // APPID
+            0x10, 0x01, // Length
+            0x00, 0x8C, // 140 in hex
+            // Reserved1
+            0x00, 0x00, // Reserved2
+            0x00, 0x00,
+        ];
 
-    // [ab] allData tag and length
-    new_pos = encode_tag_length(0xab, data_set_size, buffer, new_pos)?;
+        assert_eq!(
+            encoded.len(),
+            26,
+            "Ethernet header with VLAN should be 26 bytes"
+        );
+        assert_eq!(
+            encoded, expected,
+            "Encoded Ethernet header with VLAN does not match expected"
+        );
+    }
 
-    // allData (Array of IECData)
-    new_pos = encode_iec_data(&config.all_data, buffer, new_pos)?;
+    #[test]
+    fn test_encode_ethernet_header_length_field() {
+        let header = EthernetHeader {
+            dst_addr: [0x01, 0x0C, 0xCD, 0x01, 0x00, 0x01],
+            src_addr: [0x00, 0x1A, 0xB6, 0x03, 0x2F, 0x1C],
+            tpid: Some([0x81, 0x00]),
+            tci: Some([0x00, 0x01]),
+            ether_type: [0x88, 0xB8],
+            appid: [0x10, 0x01],
+            length: [0x00, 0x00],
+        };
 
-    Ok(new_pos)
+        // Test different length values
+        let test_lengths = vec![
+            (140u16, [0x00, 0x8C]),
+            (256u16, [0x01, 0x00]),
+            (1500u16, [0x05, 0xDC]),
+        ];
+
+        for (length, expected_bytes) in test_lengths {
+            let encoded = encode_ethernet_header(&header, length);
+
+            // Length field is at positions 20-21 (with VLAN)
+            assert_eq!(
+                &encoded[20..22],
+                &expected_bytes,
+                "Length field mismatch for length {}",
+                length
+            );
+        }
+    }
+
+    #[test]
+    fn test_encode_ethernet_header_reserved_fields() {
+        let header = EthernetHeader {
+            dst_addr: [0x01, 0x0C, 0xCD, 0x01, 0x00, 0x01],
+            src_addr: [0x00, 0x1A, 0xB6, 0x03, 0x2F, 0x1C],
+            tpid: Some([0x81, 0x00]),
+            tci: Some([0x00, 0x01]),
+            ether_type: [0x88, 0xB8],
+            appid: [0x10, 0x01],
+            length: [0x00, 0x00],
+        };
+
+        let encoded = encode_ethernet_header(&header, 140);
+
+        // Check Reserved1 (positions 22-23)
+        assert_eq!(&encoded[22..24], &[0x00, 0x00], "Reserved1 should be zero");
+
+        // Check Reserved2 (positions 24-25)
+        assert_eq!(&encoded[24..26], &[0x00, 0x00], "Reserved2 should be zero");
+    }
+
+    #[test]
+    fn test_encode_goose_pdu() {
+        // Create a minimal IECGoosePdu or your equivalent struct
+
+        let header = EthernetHeader {
+            dst_addr: [0x01, 0x0C, 0xCD, 0x01, 0x00, 0x01],
+            src_addr: [0x00, 0x1A, 0xB6, 0x03, 0x2F, 0x1C],
+            tpid: Some([0x81, 0x00]),
+            tci: Some([0x00, 0x01]),
+            ether_type: [0x88, 0xB8],
+            appid: [0x10, 0x01],
+            length: [0x00, 0x00], // will be set during encoding
+        };
+
+        let data = vec![
+            IECData::UInt(1),
+            IECData::UInt(128),
+            IECData::UInt(255),
+            IECData::UInt(127),
+            IECData::UInt(1),
+            IECData::UInt(128),
+            IECData::UInt(255),
+            IECData::Boolean(true),
+            IECData::Int(2147483647),
+            IECData::Int(2147483648),
+            IECData::VisibleString("test".to_string()),
+        ];
+
+        let pdu = IECGoosePdu {
+            go_cb_ref: "IED1/LLN0$GO$gcb1".to_string(),
+            time_allowed_to_live: 2000,
+            dat_set: "IED1/LLN0$DATASET1".to_string(),
+            go_id: "GOOSE1".try_into().unwrap(),
+            t: Timestamp::from_bytes([0x20, 0x21, 0x06, 0x12, 0x0A, 0x30, 0x00, 0x00]),
+            st_num: 1,
+            sq_num: 42,
+            simulation: false,
+            conf_rev: 128,
+            nds_com: false,
+            num_dat_set_entries: data.len() as u32,
+            all_data: data,
+        };
+
+        let result = encode_goose(&header, &pdu);
+        assert!(result.is_ok());
+
+        let encoded = result.unwrap();
+        let len = encoded.len();
+
+        // Replace this with your actual expected encoding:
+        let expected: &[u8] = &[
+            1, 12, 205, 1, 0, 1, 0, 26, 182, 3, 47, 28, 129, 0, 0, 1, 136, 184, 16, 1, 0, 140, 0,
+            0, 0, 0, 97, 129, 129, 128, 17, 73, 69, 68, 49, 47, 76, 76, 78, 48, 36, 71, 79, 36,
+            103, 99, 98, 49, 129, 2, 7, 208, 130, 18, 73, 69, 68, 49, 47, 76, 76, 78, 48, 36, 68,
+            65, 84, 65, 83, 69, 84, 49, 131, 6, 71, 79, 79, 83, 69, 49, 132, 8, 32, 33, 6, 18, 10,
+            48, 0, 0, 133, 1, 1, 134, 1, 42, 135, 1, 0, 136, 2, 0, 128, 137, 1, 0, 138, 1, 11, 171,
+            47, 134, 1, 1, 134, 2, 0, 128, 134, 2, 0, 255, 134, 1, 127, 134, 1, 1, 134, 2, 0, 128,
+            134, 2, 0, 255, 131, 1, 255, 133, 4, 127, 255, 255, 255, 133, 5, 0, 128, 0, 0, 0, 138,
+            4, 116, 101, 115, 116,
+        ];
+        assert_eq!(len, 158, "Encoded length does not match expected length");
+
+        assert_eq!(
+            encoded, expected,
+            "Encoded buffer does not match expected output"
+        );
+    }
 }
