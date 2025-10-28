@@ -1,80 +1,76 @@
-use crate::decode_basics::*;
-use crate::types::{DecodeError, IECGoosePdu};
+use crate::types::{DecodeError, EthernetHeader, IECGoosePdu, IECGoosePduRasn};
+use rasn::ber::decode;
 
-/// Decodes a GOOSE PDU from the buffer at the specified position,
+/// Decodes an Ethernet header from the buffer at the specified position,
 /// writing the result into the provided mutable reference.
 ///
 /// # Parameters
-/// - `pdu`: A mutable reference where the decoded IECGoosePdu will be stored.
-/// - `buffer`: The input byte slice containing the encoded GOOSE PDU.
-/// - `pos`: The starting position in the buffer to read from.
+/// - `header`: A mutable reference where the decoded EthernetHeader will be stored.
+/// - `buffer`: The input byte slice containing the encoded Ethernet header.
 ///
 /// # Returns
-/// The new buffer position after decoding the PDU.
-pub fn decode_goose_pdu(
-    pdu: &mut IECGoosePdu,
-    buffer: &[u8],
-    pos: usize,
-) -> Result<usize, DecodeError> {
-    let mut new_pos = pos;
+/// The next position in the buffer after reading the Ethernet header.
+///
+/// # Panics
+/// Panics if the buffer does not contain enough bytes to decode the header.
+pub fn decode_ethernet_header(header: &mut EthernetHeader, buffer: &[u8]) -> usize {
+    let mut new_pos = 0;
 
-    // goose_pdu_length
-    let mut _tag = 0u8;
-    let mut _length = 0usize;
-    new_pos = decode_tag_length(&mut _tag, &mut _length, buffer, new_pos)?;
+    header
+        .dst_addr
+        .copy_from_slice(&buffer[new_pos..new_pos + 6]);
+    new_pos += 6;
 
-    // go_cb_ref
-    let mut length = 0usize;
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
-    new_pos = decode_string(&mut pdu.go_cb_ref, buffer, new_pos, length)?;
+    header
+        .src_addr
+        .copy_from_slice(&buffer[new_pos..new_pos + 6]);
+    new_pos += 6;
 
-    // time_allowed_to_live
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
-    new_pos = decode_unsigned_32(&mut pdu.time_allowed_to_live, buffer, new_pos, length)?;
+    // VLAN tag present
+    if buffer[new_pos..new_pos + 2] == [0x81, 0x00] {
+        let mut tpid = [0u8; 2];
+        tpid.copy_from_slice(&buffer[new_pos..new_pos + 2]);
+        header.tpid = Some(tpid);
+        new_pos += 2;
+        let mut tci = [0u8; 2];
+        tci.copy_from_slice(&buffer[new_pos..new_pos + 2]);
+        header.tci = Some(tci);
+        new_pos += 2;
+    } else {
+        header.tpid = None;
+        header.tci = None;
+    }
 
-    // data_set
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
-    new_pos = decode_string(&mut pdu.dat_set, buffer, new_pos, length)?;
+    header
+        .ether_type
+        .copy_from_slice(&buffer[new_pos..new_pos + 2]);
+    new_pos += 2;
 
-    // go_id
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
-    new_pos = decode_string(&mut pdu.go_id, buffer, new_pos, length)?;
+    header.appid.copy_from_slice(&buffer[new_pos..new_pos + 2]);
+    new_pos += 2;
 
-    // t (timestamp)
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
-    pdu.t.copy_from_slice(&buffer[new_pos..new_pos + 8]);
-    new_pos += 8;
+    header.length.copy_from_slice(&buffer[new_pos..new_pos + 2]);
+    new_pos += 2;
 
-    // st_num
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
-    new_pos = decode_unsigned_32(&mut pdu.st_num, buffer, new_pos, length)?;
+    new_pos += 2; // reserved 1
+    new_pos += 2; // reserved 2
 
-    // sq_num
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
-    new_pos = decode_unsigned_32(&mut pdu.sq_num, buffer, new_pos, length)?;
+    new_pos
+}
 
-    // simulation
-    new_pos = decode_tag_length(&mut _tag, &mut _length, buffer, new_pos)?;
-    new_pos = decode_boolean(&mut pdu.simulation, buffer, new_pos)?;
+/// Decodes a GOOSE PDU from the buffer using rasn.
+/// Returns the decoded PDU.
+///
+/// # Parameters
+/// - `buffer`: The input byte slice containing the encoded GOOSE PDU (just the PDU, not Ethernet headers)
+///
+/// # Returns
+/// The decoded IECGoosePdu with all_data still in raw form
+pub fn decode_goose_pdu(buffer: &[u8], pos: usize) -> Result<IECGoosePdu, DecodeError> {
+    let pdu: IECGoosePduRasn = decode(&buffer[pos..])
+        .map_err(|e| DecodeError::new(&format!("Failed to decode GOOSE PDU: {:?}", e), 0))?;
 
-    // conf_rev
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
-    new_pos = decode_unsigned_32(&mut pdu.conf_rev, buffer, new_pos, length)?;
-
-    // nds_com
-    new_pos = decode_tag_length(&mut _tag, &mut _length, buffer, new_pos)?;
-    new_pos = decode_boolean(&mut pdu.nds_com, buffer, new_pos)?;
-
-    // num_data_set_entries
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
-    new_pos = decode_unsigned_32(&mut pdu.num_dat_set_entries, buffer, new_pos, length)?;
-
-    // all_data
-    new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
-    pdu.all_data.clear();
-    new_pos = decode_iec_data(&mut pdu.all_data, buffer, new_pos, new_pos + length)?;
-
-    Ok(new_pos)
+    Ok(IECGoosePdu::from(&pdu))
 }
 
 /// Checks if the given buffer contains a GOOSE frame by inspecting the EtherType field,
@@ -98,4 +94,224 @@ pub fn is_goose_frame(buffer: &[u8]) -> bool {
     }
     let ether_type = &buffer[ether_type_offset..ether_type_offset + 2];
     ether_type == [0x88, 0xb8] || ether_type == [0x88, 0xb9]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{EthernetHeader, IECData};
+
+    #[test]
+    fn test_decode_ethernet_header_without_vlan() {
+        let buffer: Vec<u8> = vec![
+            // Destination MAC: 01:0c:cd:01:00:01
+            0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01, // Source MAC: 00:1a:b6:03:2f:1c
+            0x00, 0x1a, 0xb6, 0x03, 0x2f, 0x1c, // EtherType: 0x88b8 (GOOSE)
+            0x88, 0xb8, // APPID: 0x1001
+            0x10, 0x01, // Length: 0x008c (140 bytes)
+            0x00, 0x8c, // Reserved1: 0x0000
+            0x00, 0x00, // Reserved2: 0x0000
+            0x00, 0x00,
+        ];
+
+        let mut header = EthernetHeader::default();
+        let pos = decode_ethernet_header(&mut header, &buffer);
+
+        // Check destination MAC
+        assert_eq!(header.dst_addr, [0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01]);
+
+        // Check source MAC
+        assert_eq!(header.src_addr, [0x00, 0x1a, 0xb6, 0x03, 0x2f, 0x1c]);
+
+        // Check no VLAN tags
+        assert_eq!(header.tpid, None);
+        assert_eq!(header.tci, None);
+
+        // Check EtherType (GOOSE)
+        assert_eq!(header.ether_type, [0x88, 0xb8]);
+
+        // Check APPID
+        assert_eq!(header.appid, [0x10, 0x01]);
+
+        // Check Length
+        assert_eq!(header.length, [0x00, 0x8c]);
+
+        // Check position (12 MAC + 2 EtherType + 2 APPID + 2 Length + 4 Reserved = 22)
+        assert_eq!(pos, 22);
+    }
+
+    #[test]
+    fn test_decode_ethernet_header_with_vlan() {
+        let buffer: Vec<u8> = vec![
+            // Destination MAC: 01:0c:cd:01:00:01
+            0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01, // Source MAC: 00:1a:b6:03:2f:1c
+            0x00, 0x1a, 0xb6, 0x03, 0x2f, 0x1c, // VLAN TPID: 0x8100
+            0x81, 0x00, // VLAN TCI: 0x0001
+            0x00, 0x01, // EtherType: 0x88b8 (GOOSE)
+            0x88, 0xb8, // APPID: 0x1001
+            0x10, 0x01, // Length: 0x008c (140 bytes)
+            0x00, 0x8c, // Reserved1: 0x0000
+            0x00, 0x00, // Reserved2: 0x0000
+            0x00, 0x00,
+        ];
+
+        let mut header = EthernetHeader::default();
+        let pos = decode_ethernet_header(&mut header, &buffer);
+
+        // Check destination MAC
+        assert_eq!(header.dst_addr, [0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01]);
+
+        // Check source MAC
+        assert_eq!(header.src_addr, [0x00, 0x1a, 0xb6, 0x03, 0x2f, 0x1c]);
+
+        // Check VLAN tags present
+        assert_eq!(header.tpid, Some([0x81, 0x00]));
+        assert_eq!(header.tci, Some([0x00, 0x01]));
+
+        // Check EtherType (GOOSE)
+        assert_eq!(header.ether_type, [0x88, 0xb8]);
+
+        // Check APPID
+        assert_eq!(header.appid, [0x10, 0x01]);
+
+        // Check Length
+        assert_eq!(header.length, [0x00, 0x8c]);
+
+        // Check position (12 MAC + 4 VLAN + 2 EtherType + 2 APPID + 2 Length + 4 Reserved = 26)
+        assert_eq!(pos, 26);
+    }
+
+    #[test]
+    fn test_decode_ethernet_header_from_real_goose_frame() {
+        // Real GOOSE frame from your test data
+        let buffer: Vec<u8> = vec![
+            1, 12, 205, 1, 0, 1, 0, 26, 182, 3, 47, 28, 129, 0, 0, 1, 136, 184, 16, 1, 0, 140, 0,
+            0, 0, 0,
+        ];
+
+        let mut header = EthernetHeader::default();
+        let pos = decode_ethernet_header(&mut header, &buffer);
+
+        // Check destination MAC: 01:0c:cd:01:00:01
+        assert_eq!(header.dst_addr, [0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01]);
+
+        // Check source MAC: 00:1a:b6:03:2f:1c
+        assert_eq!(header.src_addr, [0x00, 0x1a, 0xb6, 0x03, 0x2f, 0x1c]);
+
+        // Check VLAN present: TPID=0x8100, TCI=0x0001
+        assert_eq!(header.tpid, Some([0x81, 0x00]));
+        assert_eq!(header.tci, Some([0x00, 0x01]));
+
+        // Check EtherType: 0x88b8 (GOOSE)
+        assert_eq!(header.ether_type, [0x88, 0xb8]);
+
+        // Check APPID: 0x1001
+        assert_eq!(header.appid, [0x10, 0x01]);
+
+        // Check Length: 0x008c (140 bytes)
+        assert_eq!(header.length, [0x00, 0x8c]);
+
+        // Position should be at byte 26 (start of GOOSE PDU)
+        assert_eq!(pos, 26);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_decode_ethernet_header_buffer_too_short() {
+        let buffer: Vec<u8> = vec![0x01, 0x02, 0x03]; // Too short
+        let mut header = EthernetHeader::default();
+        decode_ethernet_header(&mut header, &buffer);
+    }
+
+    #[test]
+    fn test_decode_goose_pdu_all_fields() {
+        let buf: &[u8] = &[
+            1, 12, 205, 1, 0, 1, 0, 26, 182, 3, 47, 28, 129, 0, 0, 1, 136, 184, 16, 1, 0, 140, 0,
+            0, 0, 0, 97, 129, 129, 128, 17, 73, 69, 68, 49, 47, 76, 76, 78, 48, 36, 71, 79, 36,
+            103, 99, 98, 49, 129, 2, 7, 208, 130, 18, 73, 69, 68, 49, 47, 76, 76, 78, 48, 36, 68,
+            65, 84, 65, 83, 69, 84, 49, 131, 6, 71, 79, 79, 83, 69, 49, 132, 8, 32, 33, 6, 18, 10,
+            48, 0, 0, 133, 1, 1, 134, 1, 42, 135, 1, 0, 136, 2, 0, 128, 137, 1, 0, 138, 1, 11, 171,
+            47, 134, 1, 1, 134, 2, 0, 128, 134, 2, 0, 255, 134, 1, 127, 134, 1, 1, 134, 2, 0, 128,
+            134, 2, 0, 255, 131, 1, 255, 133, 4, 127, 255, 255, 255, 133, 5, 0, 128, 0, 0, 0, 138,
+            4, 116, 101, 115, 116,
+        ];
+
+        let mut header = EthernetHeader::default();
+        let pos = decode_ethernet_header(&mut header, &buf);
+        let goose_pdu = decode_goose_pdu(&buf, pos).unwrap();
+
+        println!("Decoded GOOSE PDU: {:?}", goose_pdu.all_data[10]);
+
+        // assert_eq!(pos, buf.len());
+        assert_eq!(goose_pdu.go_cb_ref.to_string(), "IED1/LLN0$GO$gcb1");
+        assert_eq!(goose_pdu.time_allowed_to_live, 2000);
+        assert_eq!(goose_pdu.dat_set.to_string(), "IED1/LLN0$DATASET1");
+        assert_eq!(goose_pdu.go_id.to_string(), "GOOSE1");
+        assert_eq!(goose_pdu.t.fraction, 667648);
+        assert_eq!(goose_pdu.t.seconds, 539035154);
+        assert_eq!(goose_pdu.t.quality.accuracy_bits(), Some(0));
+        assert_eq!(goose_pdu.t.quality.clock_failure, false);
+        assert_eq!(goose_pdu.t.quality.clock_not_synchronized, false);
+        assert_eq!(goose_pdu.t.quality.leap_second_known, false);
+        assert_eq!(goose_pdu.t.quality.time_accuracy, 0);
+        let data = goose_pdu.all_data;
+        assert_eq!(goose_pdu.st_num, 1);
+        assert_eq!(goose_pdu.sq_num, 42);
+        assert_eq!(goose_pdu.simulation, false);
+        assert_eq!(goose_pdu.conf_rev, 128);
+        assert_eq!(goose_pdu.nds_com, false);
+        assert_eq!(goose_pdu.num_dat_set_entries, 11);
+        assert_eq!(data[0], IECData::UInt(1));
+        assert_eq!(data[1], IECData::UInt(0x80));
+        assert_eq!(data[2], IECData::UInt(0x000000FF));
+        assert_eq!(data[3], IECData::UInt(0x0000007F));
+        assert_eq!(data[4], IECData::UInt(0x00000001));
+        assert_eq!(data[5], IECData::UInt(0x00000080));
+        assert_eq!(data[6], IECData::UInt(0x000000FF));
+        assert_eq!(data[7], IECData::Boolean(true));
+        assert_eq!(data[8], IECData::Int(2147483647));
+        assert_eq!(data[9], IECData::Int(2147483648));
+        assert_eq!(data[10], IECData::VisibleString("test".to_string()));
+    }
+
+    #[test]
+    fn test_is_goose_frame() {
+        // GOOSE EtherType without VLAN tag (0x88b8 at bytes 12-13)
+        let mut buf = [0u8; 60];
+        buf[12] = 0x88;
+        buf[13] = 0xb8;
+        assert!(is_goose_frame(&buf));
+
+        // GOOSE EtherType with VLAN tag (0x81, 0x00 at 12-13, 0x88b8 at 16-17)
+        let mut buf_vlan = [0u8; 60];
+        buf_vlan[12] = 0x81;
+        buf_vlan[13] = 0x00;
+        buf_vlan[16] = 0x88;
+        buf_vlan[17] = 0xb8;
+        assert!(is_goose_frame(&buf_vlan));
+
+        // Not a GOOSE frame (wrong EtherType)
+        let mut buf_wrong = [0u8; 60];
+        buf_wrong[12] = 0x08;
+        buf_wrong[13] = 0x00;
+        assert!(!is_goose_frame(&buf_wrong));
+
+        // Not a GOOSE frame (VLAN tag present, wrong EtherType)
+        let mut buf_vlan_wrong = [0u8; 60];
+        buf_vlan_wrong[12] = 0x81;
+        buf_vlan_wrong[13] = 0x00;
+        buf_vlan_wrong[16] = 0x08;
+        buf_vlan_wrong[17] = 0x00;
+        assert!(!is_goose_frame(&buf_vlan_wrong));
+
+        // Buffer just too short for EtherType without VLAN
+        let short_buf = [0u8; 13];
+        assert!(!is_goose_frame(&short_buf));
+
+        // Buffer just too short for EtherType with VLAN
+        let mut short_vlan_buf = [0u8; 17];
+        short_vlan_buf[12] = 0x81;
+        short_vlan_buf[13] = 0x00;
+        assert!(!is_goose_frame(&short_vlan_buf));
+    }
 }
