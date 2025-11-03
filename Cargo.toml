@@ -11,4 +11,8 @@ rasn = "0.18"
 hex = "0.4.3"
 
 [dev-dependencies]
-# Add test dependencies here if needed
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "goose_codec"
+harness = false

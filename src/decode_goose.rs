@@ -314,4 +314,206 @@ mod tests {
         short_vlan_buf[13] = 0x00;
         assert!(!is_goose_frame(&short_vlan_buf));
     }
+
+    #[test]
+    fn test_goose_decode_performance() {
+        use std::time::Instant;
+
+        let buf: &[u8] = &[
+            1, 12, 205, 1, 0, 1, 0, 26, 182, 3, 47, 28, 129, 0, 0, 1, 136, 184, 16, 1, 0, 140, 0,
+            0, 0, 0, 97, 129, 129, 128, 17, 73, 69, 68, 49, 47, 76, 76, 78, 48, 36, 71, 79, 36,
+            103, 99, 98, 49, 129, 2, 7, 208, 130, 18, 73, 69, 68, 49, 47, 76, 76, 78, 48, 36, 68,
+            65, 84, 65, 83, 69, 84, 49, 131, 6, 71, 79, 79, 83, 69, 49, 132, 8, 32, 33, 6, 18, 10,
+            48, 0, 0, 133, 1, 1, 134, 1, 42, 135, 1, 0, 136, 2, 0, 128, 137, 1, 0, 138, 1, 11, 171,
+            47, 134, 1, 1, 134, 2, 0, 128, 134, 2, 0, 255, 134, 1, 127, 134, 1, 1, 134, 2, 0, 128,
+            134, 2, 0, 255, 131, 1, 255, 133, 4, 127, 255, 255, 255, 133, 5, 0, 128, 0, 0, 0, 138,
+            4, 116, 101, 115, 116,
+        ];
+
+        let iterations = 10_000;
+
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let mut header = EthernetHeader::default();
+            let pos = decode_ethernet_header(&mut header, &buf);
+            let _ = decode_goose_pdu(&buf, pos);
+        }
+        let duration = start.elapsed();
+
+        let avg_ns = duration.as_nanos() / iterations;
+        let avg_us = avg_ns as f64 / 1000.0;
+
+        println!("\n=== GOOSE Decode Performance ===");
+        println!("Iterations: {}", iterations);
+        println!("Total time: {:?}", duration);
+        println!("Average per decode: {} ns ({:.3} μs)", avg_ns, avg_us);
+        println!(
+            "Theoretical max rate: {:.0} Hz ({:.1} kHz)",
+            1_000_000.0 / avg_us,
+            (1_000_000.0 / avg_us) / 1000.0
+        );
+
+        // GOOSE is much slower than SMV, typical rates are 50-1000 Hz
+        // So we have much more relaxed requirements: < 1ms (1000 μs)
+        assert!(
+            avg_us < 1000.0,
+            "Decode too slow: {:.3} μs (should be < 1000 μs for 1 kHz rate)",
+            avg_us
+        );
+    }
+
+    #[test]
+    fn test_goose_encode_performance() {
+        use crate::encode_goose::encode_goose;
+        use crate::types::{EthernetHeader, IECData, IECGoosePdu, TimeQuality, Timestamp};
+        use std::time::Instant;
+
+        let header = EthernetHeader {
+            dst_addr: [0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01],
+            src_addr: [0x00, 0x1a, 0xb6, 0x03, 0x2f, 0x1c],
+            tpid: Some([0x81, 0x00]),
+            tci: Some([0x00, 0x01]),
+            ether_type: [0x88, 0xb8],
+            appid: [0x10, 0x01],
+            length: [0x00, 0x8c],
+        };
+
+        let pdu = IECGoosePdu {
+            go_cb_ref: "IED1/LLN0$GO$gcb1".to_string(),
+            time_allowed_to_live: 2000,
+            dat_set: "IED1/LLN0$DATASET1".to_string(),
+            go_id: "GOOSE1".to_string(),
+            t: Timestamp {
+                seconds: 539035154,
+                fraction: 667648,
+                quality: TimeQuality::default(),
+            },
+            st_num: 1,
+            sq_num: 42,
+            simulation: false,
+            conf_rev: 128,
+            nds_com: false,
+            num_dat_set_entries: 11,
+            all_data: vec![
+                IECData::UInt(1),
+                IECData::UInt(0x80),
+                IECData::UInt(0xFF),
+                IECData::UInt(0x7F),
+                IECData::UInt(1),
+                IECData::UInt(0x80),
+                IECData::UInt(0xFF),
+                IECData::Boolean(true),
+                IECData::Int(2147483647),
+                IECData::Int(2147483648),
+                IECData::VisibleString("test".to_string()),
+            ],
+        };
+
+        let iterations = 10_000;
+
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = encode_goose(&header, &pdu);
+        }
+        let duration = start.elapsed();
+
+        let avg_ns = duration.as_nanos() / iterations;
+        let avg_us = avg_ns as f64 / 1000.0;
+
+        println!("\n=== GOOSE Encode Performance ===");
+        println!("Iterations: {}", iterations);
+        println!("Total time: {:?}", duration);
+        println!("Average per encode: {} ns ({:.3} μs)", avg_ns, avg_us);
+        println!(
+            "Theoretical max rate: {:.0} Hz ({:.1} kHz)",
+            1_000_000.0 / avg_us,
+            (1_000_000.0 / avg_us) / 1000.0
+        );
+
+        // Same requirement as decode
+        assert!(
+            avg_us < 1000.0,
+            "Encode too slow: {:.3} μs (should be < 1000 μs for 1 kHz rate)",
+            avg_us
+        );
+    }
+
+    #[test]
+    fn test_goose_roundtrip_performance() {
+        use crate::encode_goose::encode_goose;
+        use crate::types::{EthernetHeader, IECData, IECGoosePdu, TimeQuality, Timestamp};
+        use std::time::Instant;
+
+        let header = EthernetHeader {
+            dst_addr: [0x01, 0x0c, 0xcd, 0x01, 0x00, 0x01],
+            src_addr: [0x00, 0x1a, 0xb6, 0x03, 0x2f, 0x1c],
+            tpid: Some([0x81, 0x00]),
+            tci: Some([0x00, 0x01]),
+            ether_type: [0x88, 0xb8],
+            appid: [0x10, 0x01],
+            length: [0x00, 0x8c],
+        };
+
+        let pdu = IECGoosePdu {
+            go_cb_ref: "IED1/LLN0$GO$gcb1".to_string(),
+            time_allowed_to_live: 2000,
+            dat_set: "IED1/LLN0$DATASET1".to_string(),
+            go_id: "GOOSE1".to_string(),
+            t: Timestamp {
+                seconds: 539035154,
+                fraction: 667648,
+                quality: TimeQuality::default(),
+            },
+            st_num: 1,
+            sq_num: 42,
+            simulation: false,
+            conf_rev: 128,
+            nds_com: false,
+            num_dat_set_entries: 11,
+            all_data: vec![
+                IECData::UInt(1),
+                IECData::UInt(0x80),
+                IECData::UInt(0xFF),
+                IECData::UInt(0x7F),
+                IECData::UInt(1),
+                IECData::UInt(0x80),
+                IECData::UInt(0xFF),
+                IECData::Boolean(true),
+                IECData::Int(2147483647),
+                IECData::Int(2147483648),
+                IECData::VisibleString("test".to_string()),
+            ],
+        };
+
+        let iterations = 10_000;
+
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let encoded = encode_goose(&header, &pdu).unwrap();
+            let mut decoded_header = EthernetHeader::default();
+            let pos = decode_ethernet_header(&mut decoded_header, &encoded);
+            let _ = decode_goose_pdu(&encoded, pos);
+        }
+        let duration = start.elapsed();
+
+        let avg_ns = duration.as_nanos() / iterations;
+        let avg_us = avg_ns as f64 / 1000.0;
+
+        println!("\n=== GOOSE Encode+Decode Roundtrip Performance ===");
+        println!("Iterations: {}", iterations);
+        println!("Total time: {:?}", duration);
+        println!("Average per roundtrip: {} ns ({:.3} μs)", avg_ns, avg_us);
+        println!(
+            "Theoretical max rate: {:.0} Hz ({:.1} kHz)",
+            1_000_000.0 / avg_us,
+            (1_000_000.0 / avg_us) / 1000.0
+        );
+
+        // Roundtrip should still be fast enough for 500 Hz
+        assert!(
+            avg_us < 2000.0,
+            "Roundtrip too slow: {:.3} μs (should be < 2000 μs for 500 Hz rate)",
+            avg_us
+        );
+    }
 }
