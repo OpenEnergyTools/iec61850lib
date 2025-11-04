@@ -56,6 +56,144 @@ impl TimeQuality {
     }
 }
 
+/// Quality flags for IEC 61850 sampled values - 13 bits total
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Quality {
+    // Validity (2 bits) - bits 0-1
+    pub validity: Validity,
+
+    // Detail quality flags (8 bits) - bits 2-9
+    pub overflow: bool,
+    pub out_of_range: bool,
+    pub bad_reference: bool,
+    pub oscillatory: bool,
+    pub failure: bool,
+    pub old_data: bool,
+    pub inconsistent: bool,
+    pub inaccurate: bool,
+
+    // Source (1 bit) - bit 10
+    pub source_substituted: bool,
+
+    // Test mode (1 bit) - bit 11
+    pub test: bool,
+
+    // Operator blocked (1 bit) - bit 12
+    pub operator_blocked: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Validity {
+    #[default]
+    Good = 0,
+    Invalid = 1,
+    Reserved = 2,
+    Questionable = 3,
+}
+
+impl Quality {
+    /// Decodes quality from a 16-bit value (13 bits used)
+    /// The bitstring is transmitted MSB first in the encoding
+    pub fn from_u16(value: u16) -> Self {
+        Quality {
+            // Validity is bits 0-1 (most significant bits)
+            validity: match (value >> 14) & 0x03 {
+                0 => Validity::Good,
+                1 => Validity::Invalid,
+                2 => Validity::Reserved,
+                3 => Validity::Questionable,
+                _ => Validity::Good,
+            },
+
+            // Detail quality flags (bits 2-9)
+            overflow: (value & (1 << 13)) != 0,
+            out_of_range: (value & (1 << 12)) != 0,
+            bad_reference: (value & (1 << 11)) != 0,
+            oscillatory: (value & (1 << 10)) != 0,
+            failure: (value & (1 << 9)) != 0,
+            old_data: (value & (1 << 8)) != 0,
+            inconsistent: (value & (1 << 7)) != 0,
+            inaccurate: (value & (1 << 6)) != 0,
+
+            // Source (bit 10)
+            source_substituted: (value & (1 << 5)) != 0,
+
+            // Test (bit 11)
+            test: (value & (1 << 4)) != 0,
+
+            // Operator blocked (bit 12)
+            operator_blocked: (value & (1 << 3)) != 0,
+        }
+    }
+
+    /// Encodes quality to a 16-bit value
+    pub fn to_u16(&self) -> u16 {
+        let mut value = 0u16;
+
+        // Validity (bits 0-1)
+        value |= (self.validity as u16) << 14;
+
+        // Detail quality flags
+        if self.overflow {
+            value |= 1 << 13;
+        }
+        if self.out_of_range {
+            value |= 1 << 12;
+        }
+        if self.bad_reference {
+            value |= 1 << 11;
+        }
+        if self.oscillatory {
+            value |= 1 << 10;
+        }
+        if self.failure {
+            value |= 1 << 9;
+        }
+        if self.old_data {
+            value |= 1 << 8;
+        }
+        if self.inconsistent {
+            value |= 1 << 7;
+        }
+        if self.inaccurate {
+            value |= 1 << 6;
+        }
+
+        // Source
+        if self.source_substituted {
+            value |= 1 << 5;
+        }
+
+        // Test
+        if self.test {
+            value |= 1 << 4;
+        }
+
+        // Operator blocked
+        if self.operator_blocked {
+            value |= 1 << 3;
+        }
+
+        value
+    }
+
+    /// Returns true if quality is good (validity=good and no detail quality flags set)
+    pub fn is_good(&self) -> bool {
+        matches!(self.validity, Validity::Good)
+            && !self.overflow
+            && !self.out_of_range
+            && !self.bad_reference
+            && !self.oscillatory
+            && !self.failure
+            && !self.old_data
+            && !self.inconsistent
+            && !self.inaccurate
+            && !self.source_substituted
+            && !self.test
+            && !self.operator_blocked
+    }
+}
+
 /// IEC 61850 UtcTime - 8 bytes with specific structure
 /// Bytes 0-3: Seconds since epoch (Jan 1, 1970)
 /// Bytes 4-6: Fraction of second (24 bits)
@@ -580,6 +718,68 @@ impl From<&IECGoosePdu> for IECGoosePduRasn {
             all_data: pdu.all_data.iter().map(IECDataRasn::from).collect(),
         }
     }
+}
+
+/// A single sampled value with its quality
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Sample {
+    /// The integer value (before scaling)
+    pub value: i32,
+    /// The quality flags
+    pub quality: Quality,
+}
+
+impl Sample {
+    /// Creates a new sample from raw value and quality bitstring (16-bit)
+    pub fn new(value: i32, quality_bits: u16) -> Self {
+        Sample {
+            value,
+            quality: Quality::from_u16(quality_bits),
+        }
+    }
+
+    /// Creates a new sample from value and quality
+    pub fn from_parts(value: i32, quality: Quality) -> Self {
+        Sample { value, quality }
+    }
+
+    /// Scales the integer value by a factor
+    pub fn scaled_value(&self, scale: f32) -> f32 {
+        self.value as f32 * scale
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SavAsdu {
+    /** Multicast Sampled Values ID as defined in tSampledValueControl.svId*/
+    pub msv_id: String,
+    /** Reference to the data set the GOOSE is shipping */
+    pub dat_set: Option<String>,
+    /** Increments with each sampled value taken */
+    pub smp_cnt: u16,
+    /** Configuration revision of the GOOSE control block */
+    pub conf_rev: u32,
+    /** Transmission time of the ASDU */
+    pub refr_tm: Option<[u8; 8]>,
+    /** How the sample value stream is time synchronized 0 = not, 1 = locally and 2 globally */
+    pub smp_synch: u8,
+    pub smp_rate: Option<u16>,
+    /** All sampled data with quality */
+    pub all_data: Vec<Sample>,
+    pub smp_mod: Option<u16>,
+    pub gm_identity: Option<[u8; 8]>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SavPdu {
+    /** Whether the sampled value stream is simulated */
+    pub sim: bool,
+    /** Number of ASDU in the packet*/
+    pub no_asdu: u16,
+    /** Time allowed to live until the next GOOSE packet */
+    pub security: bool,
+    /** All data send with the GOOSE */
+    pub sav_asdu: Vec<SavAsdu>,
 }
 
 #[derive(Debug)]

@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use iec_61850_lib::decode_goose::{decode_ethernet_header, decode_goose_pdu, is_goose_frame};
+use iec_61850_lib::decode_basics::decode_ethernet_header;
+use iec_61850_lib::decode_goose::{decode_goose_pdu, is_goose_frame};
 use iec_61850_lib::encode_goose::{encode_ethernet_header, encode_goose};
 use iec_61850_lib::types::{EthernetHeader, IECData, IECGoosePdu, TimeQuality, Timestamp};
 
@@ -100,17 +101,6 @@ fn benchmark_goose_frame_detection(c: &mut Criterion) {
 
     c.bench_function("goose_frame_detection", |b| {
         b.iter(|| is_goose_frame(black_box(&packet)));
-    });
-}
-
-fn benchmark_ethernet_header_decode(c: &mut Criterion) {
-    let packet = create_large_goose_packet();
-
-    c.bench_function("ethernet_header_decode", |b| {
-        b.iter(|| {
-            let mut header = EthernetHeader::default();
-            decode_ethernet_header(black_box(&mut header), black_box(&packet))
-        });
     });
 }
 
@@ -232,7 +222,6 @@ fn benchmark_goose_rates(c: &mut Criterion) {
 criterion_group!(
     benches,
     benchmark_goose_frame_detection,
-    benchmark_ethernet_header_decode,
     benchmark_goose_pdu_decode,
     benchmark_full_goose_decode,
     benchmark_ethernet_header_encode,

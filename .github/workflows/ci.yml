@@ -79,6 +79,9 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-bench-target-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Run SMV benchmarks
+        run: cargo bench --bench smv_decode -- --output-format bencher | tee smv_output.txt
+
       - name: Run GOOSE benchmarks
         run: cargo bench --bench goose_codec -- --output-format bencher | tee goose_output.txt
 
@@ -87,9 +90,15 @@ jobs:
         with:
           script: |
             const fs = require('fs');
+            const smvOutput = fs.readFileSync('smv_output.txt', 'utf8');
             const gooseOutput = fs.readFileSync('goose_output.txt', 'utf8');
             
             const body = `## Benchmark Results
+            
+            ### SMV Decoder Benchmarks
+            \`\`\`
+            ${smvOutput}
+            \`\`\`
             
             ### GOOSE Codec Benchmarks
             \`\`\`

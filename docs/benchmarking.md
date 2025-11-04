@@ -4,12 +4,21 @@ This document explains how to run and view the different benchmark tests in the 
 
 ## Available Benchmark Suites
 
-### GOOSE Benchmarks
+### 1. SMV (Sampled Values) Benchmarks
+**File**: `benches/smv_decode.rs`
+
+Individual benchmarks:
+- `smv_frame_detection` - How fast can we detect SMV frames from Ethernet packets
+- `full_smv_decode` - Complete SMV PDU decode including headers and data (small packet: 1 ASDU × 8 samples)
+- `smv_throughput` - Tests at different sampling rates (4 kHz, 8 kHz, 16 kHz)
+- `max_stress_decode` - Performance with realistic max (8 ASDUs × 12 samples) and stress test (8 ASDUs × 32 samples)
+- `comparison` - Comprehensive comparison of small, realistic, and stress configurations
+
+### 2. GOOSE Benchmarks
 **File**: `benches/goose_codec.rs`
 
 Individual benchmarks:
 - `goose_frame_detection` - Detecting GOOSE frames from Ethernet packets
-- `ethernet_header_decode` - Decoding Ethernet header (with VLAN support)
 - `goose_pdu_decode` - Decoding GOOSE PDU using RASN
 - `full_goose_decode` - Complete GOOSE decode (header + PDU)
 - `ethernet_header_encode` - Encoding Ethernet header
@@ -27,17 +36,31 @@ cargo bench
 
 Output location: `target/criterion/report/index.html`
 
-### Run GOOSE Benchmarks
+### Run Specific Benchmark Suite
 ```bash
+# SMV benchmarks only
+cargo bench --bench smv_decode
+
+# GOOSE benchmarks only
 cargo bench --bench goose_codec
 ```
 
 ### Run a Single Benchmark
 ```bash
+# Run just the SMV frame detection benchmark
+cargo bench --bench smv_decode -- smv_frame_detection
+
+# Run just the full SMV decode benchmark
+cargo bench --bench smv_decode -- full_smv_decode
+
+# Run the max stress decode benchmark
+cargo bench --bench smv_decode -- max_stress_decode
+
 # Run just the GOOSE PDU decode benchmark
 cargo bench --bench goose_codec -- goose_pdu_decode
 
-# Run all rate tests
+# Run all throughput/rate tests
+cargo bench -- throughput
 cargo bench -- rates
 ```
 
@@ -71,6 +94,8 @@ The report includes:
 ### 3. Individual Benchmark Reports
 Each benchmark has its own detailed report:
 ```bash
+open target/criterion/smv_frame_detection/report/index.html
+open target/criterion/full_smv_decode/report/index.html
 open target/criterion/goose_pdu_decode/report/index.html
 ```
 
@@ -113,10 +138,14 @@ cargo bench -- --baseline before_changes
 
 ### Filtering Tests
 ```bash
+# Run only SMV benchmarks with "decode" in the name
+cargo bench --bench smv_decode -- decode
+
 # Run only GOOSE benchmarks with "decode" in the name
 cargo bench --bench goose_codec -- decode
 
-# Run only rate tests
+# Run only throughput/rate tests
+cargo bench -- throughput
 cargo bench -- rates
 
 # Run benchmarks matching a pattern
@@ -124,6 +153,14 @@ cargo bench -- "data_size"
 ```
 
 ## Performance Targets
+
+### SMV (IEC 61850-9-2)
+- **Full decode target**: < 10 μs per packet
+- **Target rates**: 4-16 kHz (250-62.5 μs between packets)
+- **Current performance**: 
+  - Small (1×8): ~1.5 μs
+  - Realistic max (8×12): ~2.4 μs (4.2x faster than target)
+  - Stress test (8×32): ~4.4 μs (2.3x faster than target)
 
 ### GOOSE (IEC 61850-8-1)
 - **Full decode**: < 1000 μs (1 ms)
@@ -156,5 +193,7 @@ cargo bench -- --save-baseline before_optimization
 cargo bench -- --baseline before_optimization
 
 # 6. Check specific benchmark in detail
+open target/criterion/smv_frame_detection/report/index.html
+open target/criterion/full_smv_decode/report/index.html
 open target/criterion/goose_pdu_decode/report/index.html
 ```
