@@ -776,16 +776,22 @@ pub struct SavPdu {
     pub sim: bool,
     /** Number of ASDU in the packet*/
     pub no_asdu: u16,
-    /** Time allowed to live until the next GOOSE packet */
-    pub security: bool,
+    /** Security field - ANY OPTIONAL type reserved for future definition (e.g., digital signature) */
+    pub security: Option<Vec<u8>>,
     /** All data send with the GOOSE */
     pub sav_asdu: Vec<SavAsdu>,
 }
 
 #[derive(Debug)]
-pub struct EncodeError {
-    pub message: String,
-    pub buffer_index: usize,
+pub enum EncodeError {
+    General {
+        message: String,
+        buffer_index: usize,
+    },
+    BufferTooSmall {
+        required: usize,
+        available: usize,
+    },
 }
 
 impl EncodeError {
@@ -794,7 +800,7 @@ impl EncodeError {
         for (i, c) in msg.chars().take(128).enumerate() {
             chart[i] = c;
         }
-        EncodeError {
+        EncodeError::General {
             message: chart.iter().collect(),
             buffer_index,
         }

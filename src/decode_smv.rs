@@ -86,7 +86,18 @@ fn decompress_integer(
             buffer_index,
         ));
     }
-    if length > value.len() {
+
+    // Handle unsigned integers with leading 0x00 byte (for MSB set prevention)
+    // If the encoded value has a leading 0x00 and the next byte has MSB set,
+    // and the length is exactly one more than our target size, skip the leading 0x00
+    let (actual_start, actual_length) = if length == value.len() + 1
+        && length >= 2
+        && buffer[buffer_index] == 0x00
+        && (buffer[buffer_index + 1] & 0x80) != 0
+    {
+        // Skip the leading 0x00 byte for unsigned integers
+        (buffer_index + 1, length - 1)
+    } else if length > value.len() {
         return Err(DecodeError::new(
             &format!(
                 "Mismatch value length {} vs buffer length {}",
@@ -95,23 +106,25 @@ fn decompress_integer(
             ),
             buffer_index,
         ));
-    }
+    } else {
+        (buffer_index, length)
+    };
 
     // Determine fill byte for sign extension (0xFF for negative, 0x00 for positive)
-    let fill = if buffer[buffer_index] & 0x80 == 0x80 {
+    let fill = if buffer[actual_start] & 0x80 == 0x80 {
         0xFF
     } else {
         0x00
     };
 
     // Fill the leading bytes with the sign extension
-    let fill_length = value.len() - length;
+    let fill_length = value.len() - actual_length;
     for item in value.iter_mut().take(fill_length) {
         *item = fill;
     }
 
     // Copy the encoded integer bytes into the lower part of the output buffer
-    value[fill_length..].copy_from_slice(&buffer[buffer_index..buffer_index + length]);
+    value[fill_length..].copy_from_slice(&buffer[actual_start..actual_start + actual_length]);
     Ok(())
 }
 
@@ -285,7 +298,7 @@ fn decode_tag_length(
 ///
 /// # Returns
 /// The new buffer position after decoding the PDU.
-pub fn decode_smv(buffer: &[u8], pos: usize) -> Result<usize, DecodeError> {
+pub fn decode_smv(buffer: &[u8], pos: usize) -> Result<SavPdu, DecodeError> {
     let mut pdu = SavPdu::default();
     let mut new_pos = pos;
 
@@ -301,13 +314,16 @@ pub fn decode_smv(buffer: &[u8], pos: usize) -> Result<usize, DecodeError> {
     new_pos = decode_tag_length(&mut _tag, &mut _length, buffer, new_pos)?;
     new_pos = decode_unsigned_16(&mut pdu.no_asdu, buffer, new_pos, _length)?;
 
-    // Optional field security
+    // Optional field security (ANY OPTIONAL - reserved for future use)
     let tag = buffer[new_pos];
     if tag == 0x81 {
-        pdu.security = true;
-        new_pos += 12; // Skip the security tag and length field
+        let mut _length = 0usize;
+        new_pos = decode_tag_length(&mut _tag, &mut _length, buffer, new_pos)?;
+        let mut sec_buf = vec![0u8; _length];
+        new_pos = decode_octet_string(&mut sec_buf, buffer, new_pos, _length)?;
+        pdu.security = Some(sec_buf);
     } else {
-        pdu.security = false;
+        pdu.security = None;
     }
 
     // sequence of ASDU
@@ -315,9 +331,9 @@ pub fn decode_smv(buffer: &[u8], pos: usize) -> Result<usize, DecodeError> {
     new_pos = decode_tag_length(&mut _tag, &mut length, buffer, new_pos)?;
 
     pdu.sav_asdu.clear();
-    new_pos = decode_smv_asdus(&mut pdu.sav_asdu, buffer, new_pos, pdu.no_asdu)?;
+    decode_smv_asdus(&mut pdu.sav_asdu, buffer, new_pos, pdu.no_asdu)?;
 
-    Ok(new_pos)
+    Ok(pdu)
 }
 
 /// Determines if the provided Ethernet frame buffer contains a Sampled Values (SMV) frame
