@@ -8,9 +8,9 @@ A high-performance Rust library for encoding and decoding IEC 61850 GOOSE and Sa
 
 This library provides efficient Rust implementations for IEC 61850-8-1 (GOOSE) and IEC 61850-9-2 LE (Sampled Values) protocols. It features:
 
-- **sampled value encoding** 
+- **sampled value encoding**
 - **sampled value decoding**
-- **GOOSE encoding** 
+- **GOOSE encoding**
 - **GOOSE decoding**
 
 ## Installation
@@ -40,16 +40,33 @@ Encode a GOOSE PDU with Ethernet header into a complete frame:
 
 ```rust
 use iec_61850_lib::encode_goose::encode_goose;
-use iec_61850_lib::types::{EthernetHeader, IECGoosePdu, IECData};
+use iec_61850_lib::types::{
+    EthernetHeader,
+    IECGoosePdu,
+    IECData,
+    TimeQuality,
+    Timestamp,
+};
 
-// Create Ethernet header
 let header = EthernetHeader {
     dst_addr: [0x01, 0x0c, 0xcd, 0x01, 0x00, 0x00],
     src_addr: [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
-    tci: Some([0x81, 0x00, 0xa0, 0x00]),  // VLAN tag (optional)
+    tpid: Some([0x81, 0x00]),              // VLAN tag (optional)
+    tci: Some([0x80, 0x00]),
     ether_type: [0x88, 0xb8],              // GOOSE EtherType
     appid: [0x00, 0x01],
     length: [0x00, 0x00],                  // Will be set automatically
+};
+
+let timestamp = Timestamp {
+    seconds: 1698502245,
+    fraction: 2097152,
+    quality: TimeQuality {
+        leap_second_known: false,
+        clock_failure: false,
+        clock_not_synchronized: false,
+        time_accuracy: 10,
+    },
 };
 
 // Create GOOSE PDU
@@ -58,19 +75,17 @@ let pdu = IECGoosePdu {
     time_allowed_to_live: 2000,
     dat_set: "IED1$Dataset1".to_string(),
     go_id: "IED1_GOOSE1".to_string(),
-    t: Default::default(),  // Timestamp
+    t: timestamp,
     st_num: 1,
     sq_num: 0,
-    test: false,
+    simulation: false,
     conf_rev: 1,
     nds_com: false,
     num_dat_set_entries: 2,
     all_data: vec![
         IECData::Boolean(true),
-        IECData::Int32(12345),
+        IECData::Int(12345),
     ],
-    simulation: false,
-    security: None,
 };
 
 // Encode to complete Ethernet frame
@@ -106,7 +121,7 @@ match decode_goose_pdu(packet, pos) {
         println!("State Number: {}", pdu.st_num);
         println!("Sequence Number: {}", pdu.sq_num);
         println!("Data entries: {}", pdu.all_data.len());
-        
+
         // Process data
         for data in &pdu.all_data {
             println!("  {:?}", data);
@@ -128,6 +143,7 @@ use iec_61850_lib::types::{EthernetHeader, SavPdu, SavAsdu, Sample};
 let header = EthernetHeader {
     dst_addr: [0x01, 0x0c, 0xcd, 0x04, 0x00, 0x01],
     src_addr: [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+    tpid: None,
     tci: None,
     ether_type: [0x88, 0xba],  // SMV EtherType
     appid: [0x40, 0x00],
@@ -143,19 +159,21 @@ let samples = vec![
 
 // Create ASDU
 let asdu = SavAsdu {
-    sv_id: "IED1_SMV1".to_string(),
+    msv_id: "AA1E1Q01BCLD1/LLN0.dataSetName".to_string(),
+    dat_set: None,
     smp_cnt: 0,
     conf_rev: 1,
-    smp_synch: Some(0),
+    refr_tm: None,
+    smp_synch: 0,
     smp_rate: Some(4800),
-    sample: samples,
+    all_data: samples,
     smp_mod: None,
     gm_identity: None,
-    ref_r_tm: None,
 };
 
 // Create SMV PDU
 let pdu = SavPdu {
+    sim: false,
     no_asdu: 1,
     sav_asdu: vec![asdu],
     security: None,
@@ -191,16 +209,16 @@ let pos = decode_ethernet_header(&mut header, packet);
 match decode_smv(packet, pos) {
     Ok(pdu) => {
         println!("Number of ASDUs: {}", pdu.no_asdu);
-        
+
         for asdu in &pdu.sav_asdu {
-            println!("SV ID: {}", asdu.sv_id);
+            println!("SV ID: {}", asdu.msv_id);
             println!("Sample Count: {}", asdu.smp_cnt);
-            println!("Number of samples: {}", asdu.sample.len());
-            
+            println!("Number of samples: {}", asdu.all_data.len());
+
             // Process samples
-            for (i, sample) in asdu.sample.iter().enumerate() {
-                println!("  Sample {}: value={}, quality={}", 
-                         i, sample.value, sample.quality);
+            for (i, sample) in asdu.all_data.iter().enumerate() {
+                println!("  Sample {}: value={}, quality={}",
+                         i, sample.value, sample.quality.is_good());
             }
         }
     }
@@ -225,7 +243,7 @@ GOOSE encoding and decoding use `rasn`, a well-defined Rust implementation of AS
 SMV encoding uses zero-copy techniques with exact buffer preallocation, achieving **3-4x performance improvement** over naive implementations:
 
 #### SMV Encoding
-- **Small packets (1 ASDU × 8 samples)**: ~418ns 
+- **Small packets (1 ASDU × 8 samples)**: ~418ns
 - **Realistic packets (8 ASDUs × 12 samples)**: ~4.35µs
 - **Large packets (8 ASDUs × 32 samples)**: ~10.98µs
 
@@ -271,5 +289,3 @@ cargo test -- --nocapture
 ## Copyright
 
 Copyright © 2025 Jakob Vogelsang. All rights reserved.
-
-
