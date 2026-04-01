@@ -455,7 +455,7 @@ fn parse_paths(data_reference: &DataReference) -> Result<(String, Vec<&str>), Er
     }
 
     let domain_id = parts[0].to_string();
-    let data_path = parts[1].split('.').map(|s| s).collect::<Vec<&str>>();
+    let data_path = parts[1].split('.').collect::<Vec<&str>>();
 
     Ok((domain_id, data_path))
 }
@@ -513,7 +513,7 @@ fn build_alternate_access(
                     }
 
                     let mut idx = String::new();
-                    while let Some(c) = chars.next() {
+                    for c in chars.by_ref() {
                         if c == ')' {
                             break;
                         }

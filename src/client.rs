@@ -58,6 +58,12 @@ pub struct ClientBuilder {
     tls_config: Option<TLSConfig>,
 }
 
+impl Default for ClientBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClientBuilder {
     pub fn new() -> Self {
         Self {
