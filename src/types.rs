@@ -525,6 +525,106 @@ pub enum DataType {
     Timestamp,
 }
 
+/// Maps to the BIT STRING `TrgOps` attribute. Bit 0 is reserved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct TriggerOptions {
+    /// Data change (dchg) — bit 0
+    pub data_change: bool,
+    /// Quality change (qchg) — bit 1
+    pub quality_change: bool,
+    /// Data update (dupd) — bit 2
+    pub data_update: bool,
+    /// Integrity period (period) — bit 3
+    pub integrity: bool,
+    /// General interrogation (gi) — bit 4
+    pub general_interrogation: bool,
+}
+
+impl TriggerOptions {
+    pub fn to_bit_string(&self) -> String {
+        format!(
+            "{}{}{}{}{}",
+            if self.data_change { '1' } else { '0' },
+            if self.quality_change { '1' } else { '0' },
+            if self.data_update { '1' } else { '0' },
+            if self.integrity { '1' } else { '0' },
+            if self.general_interrogation { '1' } else { '0' },
+        )
+    }
+}
+
+/// Optional fields included in each report entry (OptFlds), IEC 61850-7-2 Table 97
+///
+/// Maps to the BIT STRING `OptFlds` attribute. Bit 0 is reserved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ReportOptFields {
+    /// Sequence number — bit 1
+    pub sequence_number: bool,
+    /// Report timestamp — bit 2
+    pub report_time_stamp: bool,
+    /// Reason for inclusion — bit 3
+    pub reason_for_inclusion: bool,
+    /// Data-set name — bit 4
+    pub data_set_name: bool,
+    /// Data reference — bit 5
+    pub data_reference: bool,
+    /// Buffer overflow — bit 6
+    pub buffer_overflow: bool,
+    /// Entry ID — bit 7
+    pub entry_id: bool,
+    /// Configuration revision — bit 8
+    pub conf_revision: bool,
+    /// Segmentation — bit 9
+    pub segmentation: bool,
+}
+
+impl ReportOptFields {
+    /// Encodes as a 10-character binary string (bit 0 reserved = '0').
+    pub fn to_bit_string(&self) -> String {
+        format!(
+            "0{}{}{}{}{}{}{}{}{}",
+            if self.sequence_number { '1' } else { '0' },
+            if self.report_time_stamp { '1' } else { '0' },
+            if self.reason_for_inclusion { '1' } else { '0' },
+            if self.data_set_name { '1' } else { '0' },
+            if self.data_reference { '1' } else { '0' },
+            if self.buffer_overflow { '1' } else { '0' },
+            if self.entry_id { '1' } else { '0' },
+            if self.conf_revision { '1' } else { '0' },
+            if self.segmentation { '1' } else { '0' },
+        )
+    }
+}
+
+/// Settings for a Buffered Report Control Block (BRCB) write operation
+/// All fields are optional — set only the attributes you want to write.
+/// Read-only attributes (`SqNum`, `TimeOfEntry`, `ConfRev`, `Owner`) are excluded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SetBrcbValuesSettings {
+    /// Report identifier (RptID)
+    pub rpt_id: Option<String>,
+    /// Report enable (RptEna)
+    pub rpt_ena: Option<bool>,
+    /// Dataset reference (DatSet)
+    pub dat_set: Option<String>,
+    /// Optional fields to include in each entry (OptFlds)
+    pub opt_flds: Option<ReportOptFields>,
+    /// Buffer time in milliseconds (BufTm)
+    pub buf_tm: Option<u32>,
+    /// Trigger options (TrgOps)
+    pub trg_ops: Option<TriggerOptions>,
+    /// Integrity period in milliseconds (IntgPd)
+    pub intg_pd: Option<u32>,
+    /// General interrogation trigger (GI) — write `true` to trigger
+    pub gi: Option<bool>,
+    /// Purge buffer (PurgeBuf) — write `true` to purge
+    pub purge_buf: Option<bool>,
+    /// Entry ID to resume reporting from (EntryID), raw bytes
+    pub entry_id: Option<Vec<u8>>,
+    /// Reservation time in seconds (ResvTms, BRCB only)
+    pub resv_tms: Option<i16>,
+}
+
 /// Schema node produced by the MMS GetDataDefinition service.
 ///
 /// Combines the element name (from the service response) with a [`DataType`]

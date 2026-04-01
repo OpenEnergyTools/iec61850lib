@@ -1,6 +1,6 @@
 use crate::{
     mms::MmsTransport,
-    types::{DataDefinition, IECData},
+    types::{DataDefinition, IECData, SetBrcbValuesSettings},
 };
 
 use async_trait::async_trait;
@@ -37,6 +37,11 @@ pub trait Transport: Send + Sync {
     async fn get_server_directory(&self) -> Result<Vec<String>, Error>;
     async fn get_logical_device_directory(&self, ld_name: String) -> Result<Vec<String>, Error>;
     async fn get_data_definition(&self, data_ref: DataReference) -> Result<DataDefinition, Error>;
+    async fn set_brcb_values(
+        &self,
+        brcb_ref: String,
+        settings: SetBrcbValuesSettings,
+    ) -> Result<Vec<Result<(), Error>>, Error>;
 }
 
 // Function constraint data (FCD) or function constraint data attribute (FCDA)
@@ -115,6 +120,14 @@ impl Client {
     ) -> Result<DataDefinition, Error> {
         self.transport.get_data_definition(data_ref).await
     }
+
+    pub async fn set_brcb_values(
+        &self,
+        brcb_ref: String,
+        settings: SetBrcbValuesSettings,
+    ) -> Result<Vec<Result<(), Error>>, Error> {
+        self.transport.set_brcb_values(brcb_ref, settings).await
+    }
 }
 
 #[cfg(test)]
@@ -160,6 +173,18 @@ mod tests {
                 .unwrap()
                 .push(format!("def:{}", data_ref.reference));
             todo!("Return proper DataDefinition")
+        }
+
+        async fn set_brcb_values(
+            &self,
+            brcb_ref: String,
+            _settings: SetBrcbValuesSettings,
+        ) -> Result<Vec<Result<(), Error>>, Error> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("brcb:{}", brcb_ref));
+            Ok(vec![])
         }
     }
 

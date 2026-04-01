@@ -1,7 +1,9 @@
 use crate::client::{DataReference, Error, Transport};
-use crate::types::{DataDefinition, DataType, IECData, TimeQuality, Timestamp};
+use crate::types::{
+    DataDefinition, DataType, IECData, SetBrcbValuesSettings, TimeQuality, Timestamp,
+};
 use async_trait::async_trait;
-use mms::messages::iso_9506_mms_1::{TypeSpecification, UtcTime};
+use mms::messages::iso_9506_mms_1::{AnonymousWriteResponse, TypeSpecification, UtcTime};
 use mms::{
     client::{Client as MmsClient, TLSConfig},
     AccessResult, Data, TimeOfDay,
@@ -78,6 +80,106 @@ pub fn mms_data_to_iec(data: &Data) -> IECData {
         // Catch any future additions to the MMS Data enum
         Data::utc_time(uct_time) => IECData::Timestamp(utc_time_to_timestamp(uct_time)),
         _ => IECData::VisibleString("Unsupported MMS data type".to_string()),
+    }
+}
+
+/// Converts IEC 61850 IECData type to MMS Data type
+///
+/// # Mapping Notes:
+/// - `Array` -> MMS array of Data
+/// - `Structure` -> MMS structure of Data
+/// - `Boolean` -> MMS boolean
+/// - `BitString` -> MMS bit_string (parsed from binary string representation)
+/// - `Int` -> MMS integer
+/// - `UInt` -> MMS unsigned
+/// - `Float` -> MMS floating_point (64-bit double)
+/// - `OctetString` -> MMS octet_string (hex decoded)
+/// - `VisibleString` -> MMS visible_string
+/// - `MmsString` -> MMS mMSString
+/// - `Timestamp` -> MMS utc_time (8 bytes with seconds, fraction, and quality)
+pub fn iec_data_to_mms(data: &IECData) -> Result<Data, Error> {
+    match data {
+        IECData::Array(arr) => {
+            let mms_arr: Result<Vec<Data>, Error> = arr.iter().map(iec_data_to_mms).collect();
+            mms_arr.map(Data::array)
+        }
+        IECData::Structure(structure) => {
+            let mms_struct: Result<Vec<Data>, Error> =
+                structure.iter().map(iec_data_to_mms).collect();
+            mms_struct.map(Data::structure)
+        }
+        IECData::Boolean(b) => Ok(Data::boolean(*b)),
+        IECData::BitString(bits) => {
+            // Parse binary string to bytes
+            let mut bytes = Vec::new();
+            for chunk in bits.chars().collect::<Vec<_>>().chunks(8) {
+                let byte_str: String = chunk.iter().collect();
+                if byte_str.len() == 8 {
+                    if let Ok(byte) = u8::from_str_radix(&byte_str, 2) {
+                        bytes.push(byte);
+                    } else {
+                        return Err(Error::ParseError(
+                            "Invalid bit string: contains non-binary characters".to_string(),
+                        ));
+                    }
+                } else if !byte_str.is_empty() {
+                    // Pad the last byte with zeros on the right
+                    let padded = format!("{:<8}", byte_str).replace(' ', "0");
+                    if let Ok(byte) = u8::from_str_radix(&padded, 2) {
+                        bytes.push(byte);
+                    }
+                }
+            }
+            Ok(Data::bit_string(rasn::types::BitString::from_vec(bytes)))
+        }
+        IECData::Int(i) => {
+            // Convert i64 to i128 for MMS integer
+            Ok(Data::integer((*i).into()))
+        }
+        IECData::UInt(u) => {
+            // Convert u64 to u128 for MMS unsigned
+            Ok(Data::unsigned((*u).into()))
+        }
+        IECData::Float(f) => {
+            // Store as 64-bit double in big-endian format
+            let bytes = f.to_be_bytes().to_vec();
+            Ok(Data::floating_point(mms::FloatingPoint(
+                rasn::types::OctetString::from(bytes),
+            )))
+        }
+        IECData::OctetString(hex_str) => {
+            // Decode hex string to bytes
+            match hex::decode(hex_str) {
+                Ok(bytes) => Ok(Data::octet_string(rasn::types::OctetString::from(bytes))),
+                Err(_) => Err(Error::ParseError(
+                    "Invalid hex string in OctetString".to_string(),
+                )),
+            }
+        }
+        IECData::VisibleString(s) => match VisibleString::try_from(s.as_str()) {
+            Ok(vs) => Ok(Data::visible_string(vs)),
+            Err(_) => Err(Error::ParseError("Invalid visible string".to_string())),
+        },
+        IECData::MmsString(s) => match VisibleString::try_from(s.as_str()) {
+            Ok(vs) => Ok(Data::mMSString(mms::MMSString(vs))),
+            Err(_) => Err(Error::ParseError("Invalid MMS string".to_string())),
+        },
+        IECData::Timestamp(ts) => {
+            // Convert Timestamp to UtcTime (8 bytes)
+            let mut bytes = [0u8; 8];
+
+            // Bytes 0-3: Seconds since Unix epoch (big-endian)
+            bytes[0..4].copy_from_slice(&ts.seconds.to_be_bytes());
+
+            // Bytes 4-6: 24-bit fraction of second (big-endian)
+            let fraction_bytes = ts.fraction.to_be_bytes();
+            bytes[4..7].copy_from_slice(&fraction_bytes[1..4]);
+
+            // Byte 7: Time quality flags
+            bytes[7] = ts.quality.to_byte();
+
+            Ok(Data::utc_time(UtcTime(mms::FixedOctetString::from(bytes))))
+        }
     }
 }
 
@@ -643,6 +745,95 @@ impl Transport for MmsTransport {
             name,
             &result.type_description,
         ))
+    }
+
+    async fn set_brcb_values(
+        &self,
+        brcb_ref: String,
+        settings: SetBrcbValuesSettings,
+    ) -> Result<Vec<Result<(), crate::client::Error>>, crate::client::Error> {
+        let mut refs: Vec<DataReference> = Vec::new();
+        let mut values: Vec<IECData> = Vec::new();
+
+        macro_rules! push {
+            ($attr:expr, $value:expr) => {
+                refs.push(DataReference {
+                    reference: format!("{}.{}", brcb_ref, $attr),
+                    fc: "BR".to_string(),
+                });
+                values.push($value);
+            };
+        }
+
+        if let Some(v) = settings.rpt_id {
+            push!("RptID", IECData::VisibleString(v));
+        }
+        if let Some(v) = settings.dat_set {
+            push!("DatSet", IECData::VisibleString(v));
+        }
+        if let Some(v) = settings.opt_flds {
+            push!("OptFlds", IECData::BitString(v.to_bit_string()));
+        }
+        if let Some(v) = settings.buf_tm {
+            push!("BufTm", IECData::UInt(v as u64));
+        }
+        if let Some(v) = settings.trg_ops {
+            push!("TrgOps", IECData::BitString(v.to_bit_string()));
+        }
+        if let Some(v) = settings.intg_pd {
+            push!("IntgPd", IECData::UInt(v as u64));
+        }
+        if let Some(v) = settings.gi {
+            push!("GI", IECData::Boolean(v));
+        }
+        if let Some(v) = settings.purge_buf {
+            push!("PurgeBuf", IECData::Boolean(v));
+        }
+        if let Some(v) = settings.entry_id {
+            push!("EntryID", IECData::OctetString(hex::encode(v)));
+        }
+        if let Some(v) = settings.resv_tms {
+            push!("ResvTms", IECData::Int(v as i64));
+        }
+        // RptEna is always the last value to be written. This ensures that all
+        // other settings are applied before the report control block is enabled.
+        if let Some(v) = settings.rpt_ena {
+            push!("RptEna", IECData::Boolean(v));
+        }
+
+        if refs.is_empty() {
+            return Err(crate::client::Error::ParseError(
+                "No BRCB settings provided".into(),
+            ));
+        }
+
+        let variable: VariableAccessSpecification = parse_references(&refs)?;
+        let data: Result<Vec<Data>, crate::client::Error> =
+            values.iter().map(iec_data_to_mms).collect();
+        let data = data?;
+
+        println!("set_brcb_values variable: {:#?}", variable);
+        println!("set_brcb_values data: {:#?}", data);
+
+        let write_results = self
+            .client
+            .write(variable, data)
+            .await
+            .map_err(|e| crate::client::Error::ConnectionFailed(e.to_string()))?;
+
+        println!("set_brcb_values result: {:#?}", write_results);
+
+        let results: Vec<Result<(), crate::client::Error>> = write_results
+            .into_iter()
+            .map(|r| match r {
+                AnonymousWriteResponse::success(()) => Ok(()),
+                AnonymousWriteResponse::failure(e) => {
+                    Err(crate::client::Error::DataAccessError(e.0))
+                }
+            })
+            .collect();
+
+        Ok(results)
     }
 }
 
