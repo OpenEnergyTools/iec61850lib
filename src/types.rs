@@ -551,6 +551,18 @@ impl TriggerOptions {
             if self.general_interrogation { '1' } else { '0' },
         )
     }
+
+    pub fn from_bit_string(bits: &str) -> Self {
+        let b: Vec<char> = bits.chars().collect();
+        let bit = |i: usize| b.get(i).is_some_and(|&c| c == '1');
+        TriggerOptions {
+            data_change: bit(0),
+            quality_change: bit(1),
+            data_update: bit(2),
+            integrity: bit(3),
+            general_interrogation: bit(4),
+        }
+    }
 }
 
 /// Optional fields included in each report entry (OptFlds), IEC 61850-7-2 Table 97
@@ -579,6 +591,23 @@ pub struct ReportOptFields {
 }
 
 impl ReportOptFields {
+    /// Decodes from a binary string produced by [`to_bit_string`].
+    pub fn from_bit_string(bits: &str) -> Self {
+        let b: Vec<char> = bits.chars().collect();
+        let bit = |i: usize| b.get(i).is_some_and(|&c| c == '1');
+        ReportOptFields {
+            sequence_number: bit(1),
+            report_time_stamp: bit(2),
+            reason_for_inclusion: bit(3),
+            data_set_name: bit(4),
+            data_reference: bit(5),
+            buffer_overflow: bit(6),
+            entry_id: bit(7),
+            conf_revision: bit(8),
+            segmentation: bit(9),
+        }
+    }
+
     /// Encodes as a 10-character binary string (bit 0 reserved = '0').
     pub fn to_bit_string(&self) -> String {
         format!(
@@ -663,6 +692,68 @@ pub struct SetBrcbValuesSettings {
     pub entry_id: Option<Vec<u8>>,
     /// Reservation time in seconds (ResvTms, BRCB only)
     pub resv_tms: Option<i16>,
+}
+
+/// Entry time as defined in IEC 61850 / MMS (ISO 9506).
+///
+/// Encoded as 6 bytes (BinaryTime6):
+/// - Bytes 0–3: milliseconds since midnight (big-endian `u32`)
+/// - Bytes 4–5: days since **1 January 1984** (big-endian `u16`)
+///
+/// This differs from `UtcTime`/`TimeStamp` which uses the Unix epoch (1 Jan 1970).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryTime(pub Vec<u8>);
+
+impl EntryTime {
+    /// The IEC 61850 epoch (1984-01-01) as Unix timestamp in seconds.
+    const IEC61850_EPOCH_SECS: u64 = 441763200;
+
+    /// Converts to Unix timestamp in milliseconds, or `None` if the raw bytes are not exactly 6 bytes.
+    pub fn to_unix_ms(&self) -> Option<u64> {
+        if self.0.len() != 6 {
+            return None;
+        }
+        let ms_since_midnight =
+            u32::from_be_bytes([self.0[0], self.0[1], self.0[2], self.0[3]]) as u64;
+        let days = u16::from_be_bytes([self.0[4], self.0[5]]) as u64;
+        Some(Self::IEC61850_EPOCH_SECS * 1000 + days * 86_400_000 + ms_since_midnight)
+    }
+}
+
+/// Full set of attributes returned by reading a Buffered Report Control Block (BRCB).
+/// Includes both settable and read-only attributes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BufferedReportControlBlock {
+    /// Report identifier (RptID)
+    pub rpt_id: String,
+    /// Report enable (RptEna)
+    pub rpt_ena: bool,
+    /// Dataset reference (DatSet)
+    pub dat_set: String,
+    /// Configuration revision (ConfRev) — read-only
+    pub conf_rev: u32,
+    /// Optional fields (OptFlds)
+    pub opt_flds: ReportOptFields,
+    /// Buffer time in milliseconds (BufTm)
+    pub buf_tm: u32,
+    /// Sequence number (SqNum) — read-only
+    pub sq_num: u32,
+    /// Trigger options (TrgOps)
+    pub trg_ops: TriggerOptions,
+    /// Integrity period in milliseconds (IntgPd)
+    pub intg_pd: u32,
+    /// General interrogation (GI)
+    pub gi: bool,
+    /// Purge buffer (PurgeBuf)
+    pub purge_buf: bool,
+    /// Entry ID (EntryID), raw bytes
+    pub entry_id: Vec<u8>,
+    /// Time of entry (TimeOfEntry) — read-only
+    pub time_of_entry: EntryTime,
+    /// Reservation time in seconds (ResvTms)
+    pub resv_tms: i16,
+    /// Owner (Owner), raw bytes — read-only; absent on some servers
+    pub owner: Option<Vec<u8>>,
 }
 
 /// Settings for an Unbuffered Report Control Block (URCB) write operation.

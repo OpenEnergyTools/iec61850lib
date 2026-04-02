@@ -1,7 +1,7 @@
 use crate::client::{DataReference, Error, Transport};
 use crate::types::{
-    DataDefinition, DataType, IECData, SetBrcbValuesSettings, SetUrcbValuesSettings, TimeQuality,
-    Timestamp,
+    BufferedReportControlBlock, DataDefinition, DataType, EntryTime, IECData, ReportOptFields,
+    SetBrcbValuesSettings, SetUrcbValuesSettings, TimeQuality, Timestamp, TriggerOptions,
 };
 use async_trait::async_trait;
 use mms::messages::iso_9506_mms_1::{AnonymousWriteResponse, TypeSpecification, UtcTime};
@@ -912,6 +912,159 @@ impl Transport for MmsTransport {
             .collect();
 
         Ok(results)
+    }
+    async fn get_brcb_values(
+        &self,
+        brcb_ref: String,
+    ) -> Result<BufferedReportControlBlock, crate::client::Error> {
+        let refs = vec![DataReference {
+            reference: brcb_ref,
+            fc: "BR".to_string(),
+        }];
+        let variable: VariableAccessSpecification = parse_references(&refs)?;
+
+        let results = self
+            .client
+            .read(variable)
+            .await
+            .map_err(|e| crate::client::Error::ConnectionFailed(e.to_string()))?;
+
+        let fields = match results.into_iter().next() {
+            Some(AccessResult::success(data)) => match data {
+                Data::structure(s) => s,
+                _ => {
+                    return Err(crate::client::Error::ParseError(
+                        "Expected structure response for BRCB".into(),
+                    ))
+                }
+            },
+            Some(AccessResult::failure(e)) => {
+                return Err(crate::client::Error::DataAccessError(e.0))
+            }
+            None => {
+                return Err(crate::client::Error::ParseError(
+                    "Empty response for BRCB read".into(),
+                ))
+            }
+        };
+
+        if fields.len() < 14 {
+            return Err(crate::client::Error::ParseError(format!(
+                "Expected 14 or 15 structure fields, got {}",
+                fields.len()
+            )));
+        }
+
+        fn as_string(data: &Data, name: &'static str) -> Result<String, crate::client::Error> {
+            match data {
+                Data::visible_string(s) => Ok(s.to_string()),
+                Data::mMSString(s) => Ok(s.0.to_string()),
+                _ => Err(crate::client::Error::ParseError(format!(
+                    "{name}: expected string"
+                ))),
+            }
+        }
+        fn as_bool(data: &Data, name: &'static str) -> Result<bool, crate::client::Error> {
+            match data {
+                Data::boolean(b) => Ok(*b),
+                _ => Err(crate::client::Error::ParseError(format!(
+                    "{name}: expected bool"
+                ))),
+            }
+        }
+        fn as_u32(data: &Data, name: &'static str) -> Result<u32, crate::client::Error> {
+            match data {
+                Data::unsigned(u) => Ok(u64::try_from(u).unwrap_or(0) as u32),
+                Data::integer(i) => Ok(i64::try_from(i).unwrap_or(0) as u32),
+                _ => Err(crate::client::Error::ParseError(format!(
+                    "{name}: expected uint"
+                ))),
+            }
+        }
+        fn as_i16(data: &Data, name: &'static str) -> Result<i16, crate::client::Error> {
+            match data {
+                Data::integer(i) => Ok(i64::try_from(i).unwrap_or(0) as i16),
+                Data::unsigned(u) => Ok(u64::try_from(u).unwrap_or(0) as i16),
+                _ => Err(crate::client::Error::ParseError(format!(
+                    "{name}: expected int16"
+                ))),
+            }
+        }
+        fn as_bytes(data: &Data, name: &'static str) -> Result<Vec<u8>, crate::client::Error> {
+            match data {
+                Data::octet_string(octets) => Ok(octets.as_ref().to_vec()),
+                _ => Err(crate::client::Error::ParseError(format!(
+                    "{name}: expected octet string"
+                ))),
+            }
+        }
+        fn as_opt_flds(data: &Data) -> Result<ReportOptFields, crate::client::Error> {
+            match data {
+                Data::bit_string(bits) => {
+                    let s: String = bits
+                        .as_raw_slice()
+                        .iter()
+                        .flat_map(|b| {
+                            (0..8)
+                                .rev()
+                                .map(move |i| if b & (1 << i) != 0 { '1' } else { '0' })
+                        })
+                        .collect();
+                    Ok(ReportOptFields::from_bit_string(&s))
+                }
+                _ => Err(crate::client::Error::ParseError(
+                    "OptFlds: expected bit string".into(),
+                )),
+            }
+        }
+        fn as_trg_ops(data: &Data) -> Result<TriggerOptions, crate::client::Error> {
+            match data {
+                Data::bit_string(bits) => {
+                    let s: String = bits
+                        .as_raw_slice()
+                        .iter()
+                        .flat_map(|b| {
+                            (0..8)
+                                .rev()
+                                .map(move |i| if b & (1 << i) != 0 { '1' } else { '0' })
+                        })
+                        .collect();
+                    Ok(TriggerOptions::from_bit_string(&s))
+                }
+                _ => Err(crate::client::Error::ParseError(
+                    "TrgOps: expected bit string".into(),
+                )),
+            }
+        }
+
+        Ok(BufferedReportControlBlock {
+            rpt_id: as_string(&fields[0], "RptID")?,
+            rpt_ena: as_bool(&fields[1], "RptEna")?,
+            dat_set: as_string(&fields[2], "DatSet")?,
+            conf_rev: as_u32(&fields[3], "ConfRev")?,
+            opt_flds: as_opt_flds(&fields[4])?,
+            buf_tm: as_u32(&fields[5], "BufTm")?,
+            sq_num: as_u32(&fields[6], "SqNum")?,
+            trg_ops: as_trg_ops(&fields[7])?,
+            intg_pd: as_u32(&fields[8], "IntgPd")?,
+            gi: as_bool(&fields[9], "GI")?,
+            purge_buf: as_bool(&fields[10], "PurgeBuf")?,
+            entry_id: as_bytes(&fields[11], "EntryID")?,
+            time_of_entry: match &fields[12] {
+                Data::binary_time(t) => EntryTime(t.0.as_ref().to_vec()),
+                other => {
+                    return Err(crate::client::Error::ParseError(format!(
+                        "TimeOfEntry: expected binary_time, got: {other:#?}"
+                    )))
+                }
+            },
+            resv_tms: as_i16(&fields[13], "ResvTms")?,
+            owner: if fields.len() > 14 {
+                Some(as_bytes(&fields[14], "Owner")?)
+            } else {
+                None
+            },
+        })
     }
 }
 
