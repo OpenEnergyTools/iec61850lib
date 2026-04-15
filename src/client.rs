@@ -1,8 +1,9 @@
 use crate::{
     mms::MmsTransport,
     types::{
-        BufferedReportControlBlock, DataDefinition, IECData, Report, ReportType,
-        SetBrcbValuesSettings, SetUrcbValuesSettings, UnbufferedReportControlBlock,
+        BufferedReportControlBlock, CancelObject, CancelResponse, ControlObject, ControlResponse,
+        DataDefinition, IECData, Report, ReportType, SetBrcbValuesSettings, SetUrcbValuesSettings,
+        UnbufferedReportControlBlock,
     },
 };
 use tokio::sync::mpsc;
@@ -62,6 +63,17 @@ pub trait Transport: Send + Sync {
         rpt_id: String,
         report_type: ReportType,
     ) -> mpsc::Receiver<Report>;
+    async fn select(&self, ctrl_obj_ref: String) -> Result<(), Error>;
+    async fn operate(&self, ctrl_obj: ControlObject) -> Result<ControlResponse, Error>;
+    async fn select_with_value(&self, ctrl_obj: ControlObject) -> Result<ControlResponse, Error>;
+    async fn cancel(&self, ctrl_obj: CancelObject) -> Result<CancelResponse, Error>;
+    /// Subscribe to CommandTermination reports for a specific control object.
+    /// Call this **before** issuing `operate()` so that a fast device cannot deliver
+    /// the PDU before the subscription is registered.
+    fn subscribe_command_termination(
+        &self,
+        ctrl_obj_ref: String,
+    ) -> mpsc::Receiver<Result<ControlResponse, Error>>;
 }
 
 // Function constraint data (FCD) or function constraint data attribute (FCDA)
@@ -186,6 +198,32 @@ impl Client {
         self.transport
             .subscribe_reports(control_block_ref, rpt_id, report_type)
     }
+
+    pub async fn select(&self, ctrl_obj_ref: String) -> Result<(), Error> {
+        self.transport.select(ctrl_obj_ref).await
+    }
+
+    pub async fn operate(&self, ctrl_obj: ControlObject) -> Result<ControlResponse, Error> {
+        self.transport.operate(ctrl_obj).await
+    }
+
+    pub async fn select_with_value(
+        &self,
+        ctrl_obj: ControlObject,
+    ) -> Result<ControlResponse, Error> {
+        self.transport.select_with_value(ctrl_obj).await
+    }
+
+    pub async fn cancel(&self, ctrl_obj: CancelObject) -> Result<CancelResponse, Error> {
+        self.transport.cancel(ctrl_obj).await
+    }
+
+    pub fn subscribe_command_termination(
+        &self,
+        ctrl_obj_ref: String,
+    ) -> mpsc::Receiver<Result<ControlResponse, Error>> {
+        self.transport.subscribe_command_termination(ctrl_obj_ref)
+    }
 }
 
 #[cfg(test)]
@@ -285,6 +323,78 @@ mod tests {
             _rpt_id: String,
             _report_type: ReportType,
         ) -> mpsc::Receiver<Report> {
+            let (_tx, rx) = mpsc::channel(1);
+            rx
+        }
+
+        async fn select(&self, ctrl_obj_ref: String) -> Result<(), Error> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("select:{}", ctrl_obj_ref));
+            Ok(())
+        }
+
+        async fn operate(&self, ctrl_obj: ControlObject) -> Result<ControlResponse, Error> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("operate:{}", ctrl_obj.ctrl_obj_ref));
+            Ok(ControlResponse {
+                ctrl_obj_ref: ctrl_obj.ctrl_obj_ref,
+                ctl_val: ctrl_obj.ctl_val,
+                oper_tm: ctrl_obj.oper_tm,
+                origin: ctrl_obj.origin,
+                ctl_num: ctrl_obj.ctl_num,
+                t: ctrl_obj.t,
+                test: ctrl_obj.test,
+                check: ctrl_obj.check,
+                add_cause: None,
+            })
+        }
+
+        async fn select_with_value(
+            &self,
+            ctrl_obj: ControlObject,
+        ) -> Result<ControlResponse, Error> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("select_with_value:{}", ctrl_obj.ctrl_obj_ref));
+            Ok(ControlResponse {
+                ctrl_obj_ref: ctrl_obj.ctrl_obj_ref,
+                ctl_val: ctrl_obj.ctl_val,
+                oper_tm: ctrl_obj.oper_tm,
+                origin: ctrl_obj.origin,
+                ctl_num: ctrl_obj.ctl_num,
+                t: ctrl_obj.t,
+                test: ctrl_obj.test,
+                check: ctrl_obj.check,
+                add_cause: None,
+            })
+        }
+
+        async fn cancel(&self, ctrl_obj: CancelObject) -> Result<CancelResponse, Error> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("cancel:{}", ctrl_obj.ctrl_obj_ref));
+            Ok(CancelResponse {
+                ctrl_obj_ref: ctrl_obj.ctrl_obj_ref,
+                ctl_val: ctrl_obj.ctl_val,
+                oper_tm: ctrl_obj.oper_tm,
+                origin: ctrl_obj.origin,
+                ctl_num: ctrl_obj.ctl_num,
+                t: ctrl_obj.t,
+                test: ctrl_obj.test,
+                add_cause: None,
+            })
+        }
+
+        fn subscribe_command_termination(
+            &self,
+            _ctrl_obj_ref: String,
+        ) -> mpsc::Receiver<Result<ControlResponse, Error>> {
             let (_tx, rx) = mpsc::channel(1);
             rx
         }

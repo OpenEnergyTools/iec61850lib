@@ -1,9 +1,10 @@
 use crate::client::{DataReference, Error, Transport};
 use crate::types::{
-    BufferedReportControlBlock, DataDefinition, DataType, EntryTime, IECData, ReasonForInclusion,
-    Report, ReportDataPoint, ReportMetadata, ReportOptFields, ReportType, SetBrcbValuesSettings,
-    SetUrcbValuesSettings, TimeQuality, Timestamp, TriggerOptions, UnbufferedReportControlBlock,
-    UnbufferedReportOptFields,
+    AddCause, AnalogueValue, BufferedReportControlBlock, CancelObject, CancelResponse, Check,
+    ControlObject, ControlResponse, CtlVal, DataDefinition, DataType, EntryTime, IECData,
+    OriginCategory, Originator, ReasonForInclusion, Report, ReportDataPoint, ReportMetadata,
+    ReportOptFields, ReportType, SetBrcbValuesSettings, SetUrcbValuesSettings, Tcmd, TimeQuality,
+    Timestamp, TriggerOptions, UnbufferedReportControlBlock, UnbufferedReportOptFields,
 };
 use async_trait::async_trait;
 use mms::messages::iso_9506_mms_1::{AnonymousWriteResponse, TypeSpecification, UtcTime};
@@ -22,6 +23,38 @@ use mms::{
     VisibleString,
 };
 use std::time::Duration;
+
+/// MMS error (field 2 in LastAppError) — only used for debug logging.
+#[derive(Debug, Clone, Copy)]
+enum CtlError {
+    NoError = 0,
+    Unknown = 1,
+    TimeoutTestNotOk = 2,
+    OperatorTestNotOk = 3,
+}
+
+impl CtlError {
+    fn from_i64(v: i64) -> Self {
+        match v {
+            0 => Self::NoError,
+            1 => Self::Unknown,
+            2 => Self::TimeoutTestNotOk,
+            3 => Self::OperatorTestNotOk,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Decoded LastAppError information report — only used for debug logging.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct LastAppError {
+    ctrl_obj: String,
+    error: CtlError,
+    origin: Originator,
+    ctl_num: u8,
+    add_cause: AddCause,
+}
 
 /// Converts MMS Data type to IEC 61850 IECData type
 ///
@@ -50,12 +83,13 @@ pub fn mms_data_to_iec(data: &Data) -> IECData {
         Data::unsigned(u) => IECData::UInt(u64::try_from(u).unwrap_or(0)),
         Data::floating_point(fp) => {
             let bytes = fp.0.as_ref();
-            if bytes.len() == 4 {
-                let value = f32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            // MMS FloatingPoint: first byte is format (0x08 = FLOAT32, 0x0B = FLOAT64)
+            if bytes.len() == 5 && bytes[0] == 0x08 {
+                let value = f32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
                 IECData::Float(value as f64)
-            } else if bytes.len() == 8 {
+            } else if bytes.len() == 9 && bytes[0] == 0x0B {
                 let value = f64::from_be_bytes([
-                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                    bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8],
                 ]);
                 IECData::Float(value)
             } else {
@@ -144,8 +178,9 @@ pub fn iec_data_to_mms(data: &IECData) -> Result<Data, Error> {
             Ok(Data::unsigned((*u).into()))
         }
         IECData::Float(f) => {
-            // Store as 64-bit double in big-endian format
-            let bytes = f.to_be_bytes().to_vec();
+            // MMS FLOAT32: first byte = 0x08 (8-bit exponent, IEEE 754 single), then 4 data bytes
+            let mut bytes = vec![0x08u8];
+            bytes.extend_from_slice(&(*f as f32).to_be_bytes());
             Ok(Data::floating_point(mms::FloatingPoint(
                 rasn::types::OctetString::from(bytes),
             )))
@@ -637,6 +672,303 @@ fn is_array(item_id_path: &[&str]) -> bool {
     }
 
     false
+}
+
+fn timestamp_to_utc_time(ts: &Timestamp) -> UtcTime {
+    let mut bytes = [0u8; 8];
+    bytes[0..4].copy_from_slice(&ts.seconds.to_be_bytes());
+    let fraction_bytes = ts.fraction.to_be_bytes();
+    bytes[4..7].copy_from_slice(&fraction_bytes[1..4]);
+    bytes[7] = ts.quality.to_byte();
+    UtcTime(mms::FixedOctetString::from(bytes))
+}
+
+/// Builds the MMS Data structure shared by all control services.
+/// When `check` is `Some`, it is appended as the final bit-string field
+/// (Oper / SBOw). When `None`, it is omitted (Cancel).
+fn ctl_fields_to_data(
+    ctl_val: &CtlVal,
+    oper_tm: Option<&Timestamp>,
+    origin: &Originator,
+    ctl_num: u8,
+    t: &Timestamp,
+    test: bool,
+    check: Option<&Check>,
+) -> Data {
+    let mut fields: Vec<Data> = Vec::new();
+
+    fields.push(match ctl_val {
+        CtlVal::Bool(b) => Data::boolean(*b),
+        CtlVal::Int(i) => Data::integer((*i as i64).into()),
+        CtlVal::Analogue(av) => {
+            let mut av_fields: Vec<Data> = Vec::new();
+            if let Some(f) = av.f {
+                av_fields.push(Data::floating_point(mms::FloatingPoint(
+                    rasn::types::OctetString::from({
+                        let mut b = vec![0x08u8];
+                        b.extend_from_slice(&f.to_be_bytes());
+                        b
+                    }),
+                )));
+            }
+            if let Some(i) = av.i {
+                av_fields.push(Data::integer((i as i64).into()));
+            }
+            Data::structure(av_fields)
+        }
+        CtlVal::BinaryStep(s) => {
+            // Tcmd is a 2-bit coded enum. Per ASN.1 DER canonical encoding, a
+            // bit string must contain no trailing zero bits beyond the minimum
+            // size required — exactly 2 bits here (unused-bits count = 6).
+            let val = *s as u8;
+            let mut bits = rasn::types::BitString::default();
+            bits.push((val & 0x02) != 0); // MSB
+            bits.push((val & 0x01) != 0); // LSB
+            Data::bit_string(bits)
+        }
+    });
+
+    if let Some(ts) = oper_tm {
+        fields.push(Data::utc_time(timestamp_to_utc_time(ts)));
+    }
+
+    fields.push(Data::structure(vec![
+        Data::integer((origin.or_cat as i64).into()),
+        Data::octet_string(rasn::types::OctetString::from(origin.or_ident.clone())),
+    ]));
+
+    fields.push(Data::unsigned((ctl_num as u64).into()));
+    fields.push(Data::utc_time(timestamp_to_utc_time(t)));
+    fields.push(Data::boolean(test));
+
+    if let Some(chk) = check {
+        let bits_str = chk.to_bit_string();
+        let mut bytes = Vec::new();
+        for chunk in bits_str.as_bytes().chunks(8) {
+            let padded = format!("{:<8}", std::str::from_utf8(chunk).unwrap_or("00000000"))
+                .replace(' ', "0");
+            if let Ok(byte) = u8::from_str_radix(&padded, 2) {
+                bytes.push(byte);
+            }
+        }
+        fields.push(Data::bit_string(rasn::types::BitString::from_vec(bytes)));
+    }
+
+    Data::structure(fields)
+}
+
+/// Builds the MMS Data structure for a `ControlObject` (Oper / SBOw).
+fn control_object_to_data(obj: &ControlObject) -> Data {
+    ctl_fields_to_data(
+        &obj.ctl_val,
+        obj.oper_tm.as_ref(),
+        &obj.origin,
+        obj.ctl_num,
+        &obj.t,
+        obj.test,
+        Some(&obj.check),
+    )
+}
+
+/// Builds the MMS Data structure for a `CancelObject` (Cancel — no Check field).
+fn cancel_object_to_data(obj: &CancelObject) -> Data {
+    ctl_fields_to_data(
+        &obj.ctl_val,
+        obj.oper_tm.as_ref(),
+        &obj.origin,
+        obj.ctl_num,
+        &obj.t,
+        obj.test,
+        None,
+    )
+}
+
+/// Shared client control logic for operate, select_with_value and timed_operate.
+async fn control_write(
+    client: &mms::client::Client,
+    ctrl_obj: ControlObject,
+    data: Data,
+    service: &str,
+) -> Result<ControlResponse, crate::client::Error> {
+    let ControlObject {
+        ctrl_obj_ref,
+        ctl_val,
+        oper_tm,
+        origin,
+        ctl_num,
+        t,
+        test,
+        check,
+    } = ctrl_obj;
+    let reference = DataReference {
+        reference: format!("{}.{}", ctrl_obj_ref, service),
+        fc: "CO".to_string(),
+    };
+    let variable = parse_references(&[reference])?;
+
+    // Subscribe BEFORE the write so the LastAppError report (which arrives first) is buffered.
+    let mut bcast = client.handle_unconfirmed();
+
+    let write_results = client
+        .write(variable, vec![data])
+        .await
+        .map_err(|e| crate::client::Error::ConnectionFailed(e.to_string()))?;
+
+    match write_results.into_iter().next() {
+        Some(AnonymousWriteResponse::success(())) => {
+            return Ok(ControlResponse {
+                ctrl_obj_ref,
+                ctl_val,
+                oper_tm,
+                origin,
+                ctl_num,
+                t,
+                test,
+                check,
+                add_cause: None,
+            });
+        }
+        Some(AnonymousWriteResponse::failure(e)) => e.0,
+        None => {
+            return Err(crate::client::Error::ParseError(
+                "No write response received".into(),
+            ))
+        }
+    };
+
+    // Try to receive the LastAppError info report that should already be buffered.
+    let last_app_error = subscribe_last_appl_error(&mut bcast).await;
+
+    let add_cause = last_app_error
+        .as_ref()
+        .map(|e| e.add_cause)
+        .unwrap_or(AddCause::Unknown);
+
+    Ok(ControlResponse {
+        ctrl_obj_ref,
+        ctl_val,
+        oper_tm,
+        origin,
+        ctl_num,
+        t,
+        test,
+        check,
+        add_cause: Some(add_cause),
+    })
+}
+
+/// Drains the unconfirmed broadcast channel looking for a `LastAppError` information
+async fn subscribe_last_appl_error(
+    bcast: &mut tokio::sync::broadcast::Receiver<mms::messages::iso_9506_mms_1::UnconfirmedService>,
+) -> Option<LastAppError> {
+    use mms::messages::iso_9506_mms_1::UnconfirmedService;
+
+    let receive = async {
+        loop {
+            match bcast.recv().await {
+                Ok(UnconfirmedService::informationReport(ir)) => {
+                    if is_last_app_error_report(&ir.variable_access_specification) {
+                        return parse_last_app_error(&ir.list_of_access_result);
+                    }
+                    // Not the LastAppError report — keep waiting within the timeout.
+                    // Broadcast channels copy to all subscribers, so continuing here
+                    // does not steal messages from other receivers.
+                    continue;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    };
+
+    tokio::time::timeout(std::time::Duration::from_millis(50), receive)
+        .await
+        .unwrap_or(None)
+}
+
+/// Returns `true` when `spec` identifies a `LastApplError` information report.
+fn is_last_app_error_report(spec: &VariableAccessSpecification) -> bool {
+    fn is_last_appl_error_name(name: &ObjectName) -> bool {
+        matches!(name, ObjectName::vmd_specific(id) if id.0.to_string() == "LastApplError")
+    }
+    match spec {
+        VariableAccessSpecification::variableListName(name) => is_last_appl_error_name(name),
+        VariableAccessSpecification::listOfVariable(list) => {
+            list.0.len() == 1
+                && matches!(&list.0[0].variable_specification,
+                    VariableSpecification::name(n) if is_last_appl_error_name(n))
+        }
+    }
+}
+
+/// Parses the `list_of_access_result` of a `LastApplError` information report.
+fn parse_last_app_error(results: &rasn::types::SequenceOf<AccessResult>) -> Option<LastAppError> {
+    let fields = match results.first()? {
+        AccessResult::success(Data::structure(s)) => s,
+        other => {
+            println!("LastApplError: unexpected AccessResult layout: {:?}", other);
+            return None;
+        }
+    };
+
+    if fields.len() < 5 {
+        println!(
+            "LastApplError: structure has {} fields, expected ≥5",
+            fields.len()
+        );
+        return None;
+    }
+
+    let ctrl_obj = match &fields[0] {
+        Data::visible_string(s) => s.to_string(),
+        Data::mMSString(s) => s.0.to_string(),
+        _ => return None,
+    };
+
+    let error = match &fields[1] {
+        Data::integer(i) => CtlError::from_i64(i64::try_from(i).unwrap_or(0)),
+        Data::unsigned(u) => CtlError::from_i64(u64::try_from(u).unwrap_or(0) as i64),
+        _ => return None,
+    };
+
+    let origin = match &fields[2] {
+        Data::structure(origin_fields) if origin_fields.len() >= 2 => {
+            let or_cat = match &origin_fields[0] {
+                Data::integer(i) => OriginCategory::from_i64(i64::try_from(i).unwrap_or(0)),
+                Data::unsigned(u) => OriginCategory::from_i64(u64::try_from(u).unwrap_or(0) as i64),
+                _ => OriginCategory::NotSupported,
+            };
+            let or_ident = match &origin_fields[1] {
+                Data::octet_string(o) => o.as_ref().to_vec(),
+                _ => vec![],
+            };
+            Originator { or_cat, or_ident }
+        }
+        _ => return None,
+    };
+
+    let ctl_num = match &fields[3] {
+        Data::unsigned(u) => u64::try_from(u).unwrap_or(0) as u8,
+        Data::integer(i) => i64::try_from(i).unwrap_or(0) as u8,
+        _ => return None,
+    };
+
+    let add_cause = match &fields[4] {
+        Data::integer(i) => AddCause::from_i64(i64::try_from(i).unwrap_or(0)),
+        Data::unsigned(u) => AddCause::from_i64(u64::try_from(u).unwrap_or(0) as i64),
+        _ => return None,
+    };
+
+    Some(LastAppError {
+        ctrl_obj,
+        error,
+        origin,
+        ctl_num,
+        add_cause,
+    })
 }
 
 #[async_trait]
@@ -1461,6 +1793,390 @@ impl Transport for MmsTransport {
                 };
 
                 if tx.send(report).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        rx
+    }
+
+    async fn select(&self, ctrl_obj_ref: String) -> Result<(), crate::client::Error> {
+        let refs = parse_references(&[DataReference {
+            reference: format!("{}.SBO", ctrl_obj_ref),
+            fc: "CO".to_string(),
+        }])?;
+        let results = self
+            .client
+            .read(refs)
+            .await
+            .map_err(|e| crate::client::Error::ConnectionFailed(e.to_string()))?;
+        match results.into_iter().next() {
+            Some(AccessResult::success(_)) => Ok(()),
+            Some(AccessResult::failure(e)) => Err(crate::client::Error::DataAccessError(e.0)),
+            None => Err(crate::client::Error::ParseError(
+                "select: empty response".into(),
+            )),
+        }
+    }
+
+    async fn operate(
+        &self,
+        ctrl_obj: ControlObject,
+    ) -> Result<ControlResponse, crate::client::Error> {
+        let data = control_object_to_data(&ctrl_obj);
+        control_write(&self.client, ctrl_obj, data, "Oper").await
+    }
+
+    async fn select_with_value(
+        &self,
+        ctrl_obj: ControlObject,
+    ) -> Result<ControlResponse, crate::client::Error> {
+        let data = control_object_to_data(&ctrl_obj);
+        control_write(&self.client, ctrl_obj, data, "SBOw").await
+    }
+
+    async fn cancel(&self, ctrl_obj: CancelObject) -> Result<CancelResponse, crate::client::Error> {
+        let data = cancel_object_to_data(&ctrl_obj);
+        let ctrl_obj_ref = ctrl_obj.ctrl_obj_ref;
+        let reference = DataReference {
+            reference: format!("{}.Cancel", ctrl_obj_ref),
+            fc: "CO".to_string(),
+        };
+        let variable = parse_references(&[reference])?;
+
+        let mut bcast = self.client.handle_unconfirmed();
+
+        let write_results = self
+            .client
+            .write(variable, vec![data])
+            .await
+            .map_err(|e| crate::client::Error::ConnectionFailed(e.to_string()))?;
+
+        match write_results.into_iter().next() {
+            Some(AnonymousWriteResponse::success(())) => {
+                return Ok(CancelResponse {
+                    ctrl_obj_ref,
+                    ctl_val: ctrl_obj.ctl_val,
+                    oper_tm: ctrl_obj.oper_tm,
+                    origin: ctrl_obj.origin,
+                    ctl_num: ctrl_obj.ctl_num,
+                    t: ctrl_obj.t,
+                    test: ctrl_obj.test,
+                    add_cause: None,
+                });
+            }
+            Some(AnonymousWriteResponse::failure(e)) => e.0,
+            None => {
+                return Err(crate::client::Error::ParseError(
+                    "No write response received".into(),
+                ))
+            }
+        };
+
+        let last_app_error = subscribe_last_appl_error(&mut bcast).await;
+
+        let add_cause = last_app_error
+            .as_ref()
+            .map(|e| e.add_cause)
+            .unwrap_or(AddCause::Unknown);
+
+        Ok(CancelResponse {
+            ctrl_obj_ref,
+            ctl_val: ctrl_obj.ctl_val,
+            oper_tm: ctrl_obj.oper_tm,
+            origin: ctrl_obj.origin,
+            ctl_num: ctrl_obj.ctl_num,
+            t: ctrl_obj.t,
+            test: ctrl_obj.test,
+            add_cause: Some(add_cause),
+        })
+    }
+
+    fn subscribe_command_termination(
+        &self,
+        ctrl_obj_ref: String,
+    ) -> tokio::sync::mpsc::Receiver<Result<ControlResponse, crate::client::Error>> {
+        use mms::messages::iso_9506_mms_1::UnconfirmedService;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let mut bcast = self.client.handle_unconfirmed();
+
+        tokio::spawn(async move {
+            // Derive the MMS domain and Oper item ID from the IEC 61850 reference.
+            // e.g. "IEDLD/CSWI1.Pos" → domain="IEDLD", item_id="CSWI1$CO$Pos$Oper"
+            let Some((expected_domain, expected_item_id)) =
+                ctrl_obj_ref.split_once('/').and_then(|(domain, path)| {
+                    let parts: Vec<&str> = path.split('.').collect();
+                    if parts.is_empty() {
+                        return None;
+                    }
+                    let mut item_id = format!("{}$CO", parts[0]);
+                    for part in &parts[1..] {
+                        item_id.push('$');
+                        item_id.push_str(part);
+                    }
+                    item_id.push_str("$Oper");
+                    Some((domain.to_string(), item_id))
+                })
+            else {
+                return;
+            };
+
+            loop {
+                let msg = match bcast.recv().await {
+                    Ok(m) => m,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        println!("CommandTermination listener: lagged by {} messages", n);
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+
+                let UnconfirmedService::informationReport(ir) = msg else {
+                    continue;
+                };
+
+                // Check if the report is a CommandTermination for this control object.
+                // Positive CT: only the Oper variable is listed.
+                // Negative CT: both LastApplError (vmd-specific) and Oper are listed.
+                let positive = {
+                    let list = match &ir.variable_access_specification {
+                        VariableAccessSpecification::listOfVariable(v) => &v.0,
+                        _ => continue,
+                    };
+                    let mut has_last_appl_error = false;
+                    let mut has_oper_match = false;
+                    for entry in list {
+                        match &entry.variable_specification {
+                            VariableSpecification::name(ObjectName::vmd_specific(id))
+                                if id.0.to_string() == "LastApplError" =>
+                            {
+                                has_last_appl_error = true;
+                            }
+                            VariableSpecification::name(ObjectName::domain_specific(ds))
+                                if ds.domain_id.0.to_string() == expected_domain
+                                    && ds.item_id.0.to_string() == expected_item_id =>
+                            {
+                                has_oper_match = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !has_oper_match {
+                        continue;
+                    }
+                    !has_last_appl_error
+                };
+
+                // The Oper AccessResult is always the last success structure.
+                // Positive CT: single entry (6 fields).
+                // Negative CT: two entries — LastApplError first, Oper last (7 fields).
+                let Some(fields) = ir.list_of_access_result.iter().rev().find_map(|ar| {
+                    if let AccessResult::success(Data::structure(s)) = ar {
+                        Some(s.as_slice())
+                    } else {
+                        None
+                    }
+                }) else {
+                    if tx
+                        .send(Err(crate::client::Error::ParseError(
+                            "CommandTermination: no Oper structure in access results".into(),
+                        )))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                };
+
+                // Parse the Oper structure fields: ctlVal, origin, ctlNum, T, Test, Check.
+                if fields.len() < 6 {
+                    if tx
+                        .send(Err(crate::client::Error::ParseError(format!(
+                            "CommandTermination: Oper structure has {} fields, expected >=6",
+                            fields.len()
+                        ))))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                let ctl_val: CtlVal = match &fields[0] {
+                    Data::boolean(b) => CtlVal::Bool(*b),
+                    Data::integer(i) => CtlVal::Int(i64::try_from(i).unwrap_or(0) as i32),
+                    Data::unsigned(u) => CtlVal::Int(u64::try_from(u).unwrap_or(0) as i32),
+                    Data::bit_string(bits) => {
+                        let b0 = bits.iter().next().map(|b| *b).unwrap_or(false);
+                        let b1 = bits.iter().nth(1).map(|b| *b).unwrap_or(false);
+                        let step = match (b0 as u8) << 1 | (b1 as u8) {
+                            0 => Tcmd::Stop,
+                            1 => Tcmd::Lower,
+                            2 => Tcmd::Higher,
+                            _ => Tcmd::Reserved,
+                        };
+                        CtlVal::BinaryStep(step)
+                    }
+                    Data::structure(s) => {
+                        let mut av = AnalogueValue::default();
+                        for elem in s.iter() {
+                            match elem {
+                                Data::floating_point(fp) => {
+                                    let bytes = fp.0.as_ref();
+                                    if bytes.len() == 5 && bytes[0] == 0x08 {
+                                        av.f = Some(f32::from_be_bytes([
+                                            bytes[1], bytes[2], bytes[3], bytes[4],
+                                        ]));
+                                    }
+                                }
+                                Data::integer(i) => {
+                                    av.i = Some(i64::try_from(i).unwrap_or(0) as i32);
+                                }
+                                _ => {}
+                            }
+                        }
+                        CtlVal::Analogue(av)
+                    }
+                    _ => {
+                        if tx
+                            .send(Err(crate::client::Error::ParseError(
+                                "CommandTermination: unexpected ctlVal data type".into(),
+                            )))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let origin = match &fields[1] {
+                    Data::structure(s) if s.len() >= 2 => {
+                        let or_cat = match &s[0] {
+                            Data::integer(i) => {
+                                OriginCategory::from_i64(i64::try_from(i).unwrap_or(0))
+                            }
+                            Data::unsigned(u) => {
+                                OriginCategory::from_i64(u64::try_from(u).unwrap_or(0) as i64)
+                            }
+                            _ => OriginCategory::NotSupported,
+                        };
+                        let or_ident = match &s[1] {
+                            Data::octet_string(o) => o.as_ref().to_vec(),
+                            _ => vec![],
+                        };
+                        Originator { or_cat, or_ident }
+                    }
+                    _ => {
+                        if tx
+                            .send(Err(crate::client::Error::ParseError(
+                                "CommandTermination: unexpected origin data type".into(),
+                            )))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let ctl_num = match &fields[2] {
+                    Data::unsigned(u) => u64::try_from(u).unwrap_or(0) as u8,
+                    Data::integer(i) => i64::try_from(i).unwrap_or(0) as u8,
+                    _ => {
+                        if tx
+                            .send(Err(crate::client::Error::ParseError(
+                                "CommandTermination: unexpected ctlNum data type".into(),
+                            )))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let t = match &fields[3] {
+                    Data::utc_time(ut) => utc_time_to_timestamp(ut),
+                    _ => {
+                        if tx
+                            .send(Err(crate::client::Error::ParseError(
+                                "CommandTermination: unexpected T (timestamp) data type".into(),
+                            )))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let test = match &fields[4] {
+                    Data::boolean(b) => *b,
+                    _ => {
+                        if tx
+                            .send(Err(crate::client::Error::ParseError(
+                                "CommandTermination: unexpected Test data type".into(),
+                            )))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let check = match &fields[5] {
+                    Data::bit_string(bits) => {
+                        let synchrocheck = bits.iter().next().map(|b| *b).unwrap_or(false);
+                        let interlock_check = bits.iter().nth(1).map(|b| *b).unwrap_or(false);
+                        Check {
+                            synchrocheck,
+                            interlock_check,
+                        }
+                    }
+                    _ => {
+                        if tx
+                            .send(Err(crate::client::Error::ParseError(
+                                "CommandTermination: unexpected Check data type".into(),
+                            )))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+
+                let add_cause = if positive {
+                    None
+                } else {
+                    Some(match fields.get(6) {
+                        Some(Data::integer(i)) => AddCause::from_i64(i64::try_from(i).unwrap_or(0)),
+                        Some(Data::unsigned(u)) => {
+                            AddCause::from_i64(u64::try_from(u).unwrap_or(0) as i64)
+                        }
+                        _ => AddCause::Unknown,
+                    })
+                };
+
+                let ct = ControlResponse {
+                    ctrl_obj_ref: ctrl_obj_ref.clone(),
+                    ctl_val,
+                    oper_tm: None,
+                    origin,
+                    ctl_num,
+                    t,
+                    test,
+                    check,
+                    add_cause,
+                };
+
+                if tx.send(Ok(ct)).await.is_err() {
                     break;
                 }
             }
